@@ -313,6 +313,30 @@ impl<'snap> Add<Var<'snap>> for &Var<'snap> {
   }
 }
 
+impl<'snap> Add for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn add(self, other: Self) -> Self::Output {
+    (&self).add(&other)
+  }
+}
+
+impl<'snap> Add<f64> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn add(self, other: f64) -> Self::Output {
+    (&self).add(other)
+  }
+}
+
+impl<'snap> Add<&Var<'snap>> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn add(self, other: &Var<'snap>) -> Self::Output {
+    (&self).add(other)
+  }
+}
+
 impl<'snap> Sub for &Var<'snap> {
   type Output = Var<'snap>;
 
@@ -346,6 +370,30 @@ impl<'snap> Sub<Var<'snap>> for &Var<'snap> {
 
   fn sub(self, other: Var<'snap>) -> Self::Output {
     self.sub(&other)
+  }
+}
+
+impl<'snap> Sub for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn sub(self, other: Self) -> Self::Output {
+    (&self).sub(&other)
+  }
+}
+
+impl<'snap> Sub<f64> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn sub(self, other: f64) -> Self::Output {
+    (&self).sub(other)
+  }
+}
+
+impl<'snap> Sub<&Var<'snap>> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn sub(self, other: &Var<'snap>) -> Self::Output {
+    (&self).sub(other)
   }
 }
 
@@ -385,6 +433,30 @@ impl<'snap> Mul<Var<'snap>> for &Var<'snap> {
   }
 }
 
+impl<'snap> Mul for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn mul(self, other: Self) -> Self::Output {
+    (&self).mul(&other)
+  }
+}
+
+impl<'snap> Mul<f64> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn mul(self, other: f64) -> Self::Output {
+    (&self).mul(other)
+  }
+}
+
+impl<'snap> Mul<&Var<'snap>> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn mul(self, other: &Var<'snap>) -> Self::Output {
+    (&self).mul(other)
+  }
+}
+
 impl<'snap> Div for &Var<'snap> {
   type Output = Var<'snap>;
 
@@ -409,6 +481,30 @@ impl<'snap> Div<Var<'snap>> for &Var<'snap> {
   }
 }
 
+impl<'snap> Div for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn div(self, other: Self) -> Self::Output {
+    (&self).div(&other)
+  }
+}
+
+impl<'snap> Div<f64> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn div(self, other: f64) -> Self::Output {
+    (&self).div(other)
+  }
+}
+
+impl<'snap> Div<&Var<'snap>> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn div(self, other: &Var<'snap>) -> Self::Output {
+    (&self).div(other)
+  }
+}
+
 impl<'snap> BitXor for &Var<'snap> {
   type Output = Var<'snap>;
 
@@ -430,6 +526,30 @@ impl<'snap> BitXor<Var<'snap>> for &Var<'snap> {
 
   fn bitxor(self, other: Var<'snap>) -> Self::Output {
     self.bitxor(&other)
+  }
+}
+
+impl<'snap> BitXor for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn bitxor(self, other: Self) -> Self::Output {
+    (&self).bitxor(&other)
+  }
+}
+
+impl<'snap> BitXor<f64> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn bitxor(self, other: f64) -> Self::Output {
+    (&self).bitxor(other)
+  }
+}
+
+impl<'snap> BitXor<&Var<'snap>> for Var<'snap> {
+  type Output = Var<'snap>;
+
+  fn bitxor(self, other: &Var<'snap>) -> Self::Output {
+    (&self).bitxor(other)
   }
 }
 

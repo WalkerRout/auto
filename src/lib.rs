@@ -32,10 +32,12 @@ pub struct Var<'snap> {
 }
 
 impl<'snap> Var<'snap> {
+  #[inline]
   pub fn value(&self) -> f64 {
     self.value
   }
 
+  #[inline]
   pub fn reciprocal(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(-1.0 / (v * v));
@@ -47,6 +49,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn sin(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.cos());
@@ -58,6 +61,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn cos(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(-v.sin());
@@ -69,6 +73,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn tan(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v.cos() * v.cos()));
@@ -80,6 +85,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn ln(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / v);
@@ -91,6 +97,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn log(&self, base: f64) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v * base.ln()));
@@ -102,14 +109,17 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn log10(&self) -> Self {
     self.log(10.0)
   }
 
+  #[inline]
   pub fn log2(&self) -> Self {
     self.log(2.0)
   }
 
+  #[inline]
   pub fn asin(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 - v * v).sqrt());
@@ -121,6 +131,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn acos(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(-1.0 / (1.0 - v * v).sqrt());
@@ -132,6 +143,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn atan(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 + v * v));
@@ -143,6 +155,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn sinh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.cosh());
@@ -154,6 +167,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn cosh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.sinh());
@@ -165,6 +179,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn tanh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v.cosh() * v.cosh()));
@@ -176,6 +191,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn asinh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 + v * v).sqrt());
@@ -187,6 +203,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn acosh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v * v - 1.0).sqrt());
@@ -198,6 +215,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn atanh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 - v * v).sqrt());
@@ -209,6 +227,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn exp(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.exp());
@@ -220,6 +239,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn exp2(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.exp2() * 2.0f64.ln());
@@ -233,6 +253,7 @@ impl<'snap> Var<'snap> {
 
   /// We explicitly declare a function named `pow` on var,
   /// since `bitxor` is unclear as to what this does...
+  #[inline]
   pub fn pow(&self, other: &Self) -> Self {
     let v = self.value;
     let ov = other.value;
@@ -246,6 +267,7 @@ impl<'snap> Var<'snap> {
   }
 
   /// Same as its brother
+  #[inline]
   pub fn powf(&self, other: f64) -> Self {
     let v = self.value;
     let ov = other;
@@ -258,14 +280,17 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   pub fn sqrt(&self) -> Self {
     self.powf(1.0 / 2.0)
   }
 
+  #[inline]
   pub fn cbrt(&self) -> Self {
     self.powf(1.0 / 3.0)
   }
 
+  #[inline]
   pub fn abs(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v / v.abs());
@@ -277,6 +302,7 @@ impl<'snap> Var<'snap> {
     }
   }
 
+  #[inline]
   fn to_predecessor(&self, grad: f64) -> Predecessor {
     Predecessor {
       loc: self.node,
@@ -288,6 +314,7 @@ impl<'snap> Var<'snap> {
 impl<'snap> Add for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline]
   fn add(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = other.to_predecessor(1.0);
@@ -302,6 +329,7 @@ impl<'snap> Add for &Var<'snap> {
 impl<'snap> Add<f64> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline]
   fn add(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = self.to_predecessor(0.0);
@@ -316,6 +344,7 @@ impl<'snap> Add<f64> for &Var<'snap> {
 impl<'snap> Add<Var<'snap>> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn add(self, other: Var<'snap>) -> Self::Output {
     self.add(&other)
   }
@@ -324,6 +353,7 @@ impl<'snap> Add<Var<'snap>> for &Var<'snap> {
 impl<'snap> Add for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn add(self, other: Self) -> Self::Output {
     (&self).add(&other)
   }
@@ -332,6 +362,7 @@ impl<'snap> Add for Var<'snap> {
 impl<'snap> Add<f64> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn add(self, other: f64) -> Self::Output {
     (&self).add(other)
   }
@@ -340,6 +371,7 @@ impl<'snap> Add<f64> for Var<'snap> {
 impl<'snap> Add<&Var<'snap>> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn add(self, other: &Var<'snap>) -> Self::Output {
     (&self).add(other)
   }
@@ -348,6 +380,7 @@ impl<'snap> Add<&Var<'snap>> for Var<'snap> {
 impl<'snap> Sub for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline]
   fn sub(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = other.to_predecessor(-1.0);
@@ -362,6 +395,7 @@ impl<'snap> Sub for &Var<'snap> {
 impl<'snap> Sub<f64> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline]
   fn sub(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = self.to_predecessor(0.0);
@@ -376,6 +410,7 @@ impl<'snap> Sub<f64> for &Var<'snap> {
 impl<'snap> Sub<Var<'snap>> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn sub(self, other: Var<'snap>) -> Self::Output {
     self.sub(&other)
   }
@@ -384,6 +419,7 @@ impl<'snap> Sub<Var<'snap>> for &Var<'snap> {
 impl<'snap> Sub for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn sub(self, other: Self) -> Self::Output {
     (&self).sub(&other)
   }
@@ -392,6 +428,7 @@ impl<'snap> Sub for Var<'snap> {
 impl<'snap> Sub<f64> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn sub(self, other: f64) -> Self::Output {
     (&self).sub(other)
   }
@@ -400,6 +437,7 @@ impl<'snap> Sub<f64> for Var<'snap> {
 impl<'snap> Sub<&Var<'snap>> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn sub(self, other: &Var<'snap>) -> Self::Output {
     (&self).sub(other)
   }
@@ -408,6 +446,7 @@ impl<'snap> Sub<&Var<'snap>> for Var<'snap> {
 impl<'snap> Mul for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline]
   fn mul(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(other.value);
     let pred_b = other.to_predecessor(self.value);
@@ -422,6 +461,7 @@ impl<'snap> Mul for &Var<'snap> {
 impl<'snap> Mul<f64> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline]
   fn mul(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(other);
     let pred_b = self.to_predecessor(0.0);
@@ -436,6 +476,7 @@ impl<'snap> Mul<f64> for &Var<'snap> {
 impl<'snap> Mul<Var<'snap>> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn mul(self, other: Var<'snap>) -> Self::Output {
     self.mul(&other)
   }
@@ -444,6 +485,7 @@ impl<'snap> Mul<Var<'snap>> for &Var<'snap> {
 impl<'snap> Mul for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn mul(self, other: Self) -> Self::Output {
     (&self).mul(&other)
   }
@@ -452,6 +494,7 @@ impl<'snap> Mul for Var<'snap> {
 impl<'snap> Mul<f64> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn mul(self, other: f64) -> Self::Output {
     (&self).mul(other)
   }
@@ -460,6 +503,7 @@ impl<'snap> Mul<f64> for Var<'snap> {
 impl<'snap> Mul<&Var<'snap>> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn mul(self, other: &Var<'snap>) -> Self::Output {
     (&self).mul(other)
   }
@@ -468,6 +512,7 @@ impl<'snap> Mul<&Var<'snap>> for Var<'snap> {
 impl<'snap> Div for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn div(self, other: Self) -> Self::Output {
     self.mul(&other.reciprocal())
   }
@@ -476,6 +521,7 @@ impl<'snap> Div for &Var<'snap> {
 impl<'snap> Div<f64> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn div(self, other: f64) -> Self::Output {
     self.mul(other.recip())
   }
@@ -484,6 +530,7 @@ impl<'snap> Div<f64> for &Var<'snap> {
 impl<'snap> Div<Var<'snap>> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn div(self, other: Var<'snap>) -> Self::Output {
     self.div(&other)
   }
@@ -492,6 +539,7 @@ impl<'snap> Div<Var<'snap>> for &Var<'snap> {
 impl<'snap> Div for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn div(self, other: Self) -> Self::Output {
     (&self).div(&other)
   }
@@ -500,6 +548,7 @@ impl<'snap> Div for Var<'snap> {
 impl<'snap> Div<f64> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn div(self, other: f64) -> Self::Output {
     (&self).div(other)
   }
@@ -508,6 +557,7 @@ impl<'snap> Div<f64> for Var<'snap> {
 impl<'snap> Div<&Var<'snap>> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn div(self, other: &Var<'snap>) -> Self::Output {
     (&self).div(other)
   }
@@ -516,6 +566,7 @@ impl<'snap> Div<&Var<'snap>> for Var<'snap> {
 impl<'snap> BitXor for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn bitxor(self, other: Self) -> Self::Output {
     self.pow(other)
   }
@@ -524,6 +575,7 @@ impl<'snap> BitXor for &Var<'snap> {
 impl<'snap> BitXor<f64> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn bitxor(self, other: f64) -> Self::Output {
     self.powf(other)
   }
@@ -532,6 +584,7 @@ impl<'snap> BitXor<f64> for &Var<'snap> {
 impl<'snap> BitXor<Var<'snap>> for &Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn bitxor(self, other: Var<'snap>) -> Self::Output {
     self.bitxor(&other)
   }
@@ -540,6 +593,7 @@ impl<'snap> BitXor<Var<'snap>> for &Var<'snap> {
 impl<'snap> BitXor for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn bitxor(self, other: Self) -> Self::Output {
     (&self).bitxor(&other)
   }
@@ -548,6 +602,7 @@ impl<'snap> BitXor for Var<'snap> {
 impl<'snap> BitXor<f64> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn bitxor(self, other: f64) -> Self::Output {
     (&self).bitxor(other)
   }
@@ -556,6 +611,7 @@ impl<'snap> BitXor<f64> for Var<'snap> {
 impl<'snap> BitXor<&Var<'snap>> for Var<'snap> {
   type Output = Var<'snap>;
 
+  #[inline(always)]
   fn bitxor(self, other: &Var<'snap>) -> Self::Output {
     (&self).bitxor(other)
   }
@@ -567,6 +623,7 @@ struct Snapshot {
 }
 
 impl Snapshot {
+  #[inline]
   fn var(&self, value: f64) -> Var {
     let me = self.nodes.borrow().len();
     Var {
@@ -579,6 +636,7 @@ impl Snapshot {
     }
   }
 
+  #[inline]
   fn add_node(&self, pred_a: Predecessor, pred_b: Predecessor) -> NodeIndex {
     let mut nodes = self.nodes.borrow_mut();
     let node = nodes.len();
@@ -614,6 +672,7 @@ pub struct TapeGuard<'snap> {
 }
 
 impl<'snap> TapeGuard<'snap> {
+  #[inline(always)]
   pub fn var(&self, value: f64) -> Var<'snap> {
     self.snap.var(value)
   }
@@ -664,6 +723,7 @@ impl<'snap> Gradients<'snap> {
   }
 
   fn topological_subgraph_of(&self, var: &Var<'snap>) -> Vec<NodeIndex> {
+    // TODO: refactor to linear dfs w/ stack
     fn dfs(nodes: &[Node], root: NodeIndex, visited: &mut BitSet, rsf: &mut Vec<NodeIndex>) {
       // a NodeIndex is just a usize, so we can use a bitset...
       if visited.contains(root) {
@@ -692,6 +752,7 @@ pub struct Deltas<'snap> {
 impl<'snap> Index<&Var<'snap>> for Deltas<'snap> {
   type Output = f64;
 
+  #[inline]
   fn index(&self, var: &Var<'snap>) -> &Self::Output {
     self.deltas.get(&var.node).unwrap_or(&0.0)
   }

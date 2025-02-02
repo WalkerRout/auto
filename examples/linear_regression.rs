@@ -19,7 +19,7 @@ fn main() {
   let mut w2_val = 0.0;
   let mut b_val = 0.0;
   let learning_rate = 0.02;
-  let epochs = 50000;
+  let epochs = 500000;
 
   // loss file
   let file = File::create("training_loss.csv").unwrap();
@@ -29,10 +29,11 @@ fn main() {
 
   // training loop
   let _ = writeln!(buf, "epoch,loss");
+  let mut tape = Tape::new();
   for epoch in 0..epochs {
-    let mut tape = Tape::new();
     let guard = tape.guard();
 
+    // todo; persist...
     let w1 = &guard.var(w1_val);
     let w2 = &guard.var(w2_val);
     let b = &guard.var(b_val);
@@ -41,12 +42,8 @@ fn main() {
     let mut mse = guard.var(0.0);
 
     for i in 0..x1_data.len() {
-      let x1_v = &guard.var(x1_data[i]);
-      let x2_v = &guard.var(x2_data[i]);
-      let y_v = &guard.var(y_data[i]);
-
-      let y_pred = w1 * x1_v + w2 * x2_v + b;
-      let err = y_pred - y_v;
+      let y_pred = w1 * x1_data[i] + w2 * x2_data[i] + b;
+      let err = y_pred - y_data[i];
       // cant move out of err yet...
       let sq_err = &err * &err;
       mse = mse + sq_err;
@@ -70,6 +67,9 @@ fn main() {
     }
 
     let _ = writeln!(buf, "{},{}", epoch, mse.value());
+
+    // prepare for next epoch...
+    tape.reset();
   }
   buf.flush().unwrap();
 

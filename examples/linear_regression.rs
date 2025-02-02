@@ -10,7 +10,7 @@ fn main() {
 
   for i in 0..x1_data.len() {
     // y = 5.4*x1 - 2.3*x2 - 1.4
-    let y = 5.4*x1_data[i] - 2.3*x2_data[i] - 1.4;
+    let y = 5.4 * x1_data[i] - 2.3 * x2_data[i] - 1.4;
     y_data.push(y);
   }
 
@@ -45,7 +45,7 @@ fn main() {
       let x2_v = &guard.var(x2_data[i]);
       let y_v = &guard.var(y_data[i]);
 
-      let y_pred = w1*x1_v + w2*x2_v + b;
+      let y_pred = w1 * x1_v + w2 * x2_v + b;
       let err = y_pred - y_v;
       // cant move out of err yet...
       let sq_err = &err * &err;

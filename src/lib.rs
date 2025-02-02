@@ -1,9 +1,17 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ops::{Add, BitXor, Div, Index, Mul, Sub};
 
+use bit_set::BitSet;
+
 type NodeIndex = usize;
+
+/// We have code that relies on `NodeIndex` being equal in size to a usize...
+const _: () = {
+  use std::mem::size_of;
+  assert!(size_of::<NodeIndex>() <= size_of::<usize>())
+};
 
 #[derive(Debug, PartialEq)]
 struct Predecessor {
@@ -656,13 +664,9 @@ impl<'snap> Gradients<'snap> {
   }
 
   fn topological_subgraph_of(&self, var: &Var<'snap>) -> Vec<NodeIndex> {
-    fn dfs(
-      nodes: &[Node],
-      root: NodeIndex,
-      visited: &mut HashSet<NodeIndex>,
-      rsf: &mut Vec<NodeIndex>,
-    ) {
-      if visited.contains(&root) {
+    fn dfs(nodes: &[Node], root: NodeIndex, visited: &mut BitSet, rsf: &mut Vec<NodeIndex>) {
+      // a NodeIndex is just a usize, so we can use a bitset...
+      if visited.contains(root) {
         return;
       }
       visited.insert(root);
@@ -673,7 +677,7 @@ impl<'snap> Gradients<'snap> {
     }
     let nodes = self.snap.nodes.borrow();
     let mut result = Vec::new();
-    let mut visited = HashSet::new();
+    let mut visited = BitSet::new();
     dfs(&nodes, var.node, &mut visited, &mut result);
     result
   }

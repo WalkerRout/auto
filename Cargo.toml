@@ -3,5 +3,5 @@ name = "auto"
 version = "0.1.0"
 edition = "2021"
 
-[dev-dependencies]
-rand = "0.9.0"
+[dependencies]
+bit-set = "0.8.0"

@@ -67,9 +67,6 @@ fn main() {
     }
 
     let _ = writeln!(buf, "{},{}", epoch, mse.value());
-
-    // prepare for next epoch...
-    tape.reset();
   }
   buf.flush().unwrap();
 

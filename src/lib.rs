@@ -645,7 +645,6 @@ impl Snapshot {
   }
 }
 
-// Create a node of lifetime of this snapshot
 #[derive(Debug, Default)]
 pub struct Tape {
   snap: Snapshot,
@@ -660,10 +659,6 @@ impl Tape {
 
   pub fn guard(&mut self) -> TapeGuard {
     TapeGuard { snap: &self.snap }
-  }
-
-  pub fn reset(&mut self) {
-    self.snap.nodes.get_mut().clear();
   }
 }
 
@@ -740,6 +735,12 @@ impl<'snap> Gradients<'snap> {
     let mut visited = BitSet::new();
     dfs(&nodes, var.node, &mut visited, &mut result);
     result
+  }
+}
+
+impl<'snap> Drop for Gradients<'snap> {
+  fn drop(&mut self) {
+    self.snap.nodes.borrow_mut().clear();
   }
 }
 
@@ -1212,13 +1213,13 @@ mod tests {
     fn cbrt() {
       let mut tape = Tape::new();
       let guard = tape.guard();
-      let a = &guard.var(1.4);
+      let a = &guard.var(1.0);
       let b = a.cbrt();
-      assert_eq!(b.value(), f64::cbrt(1.4));
+      assert_eq!(b.value(), f64::cbrt(1.0));
       let grads = guard.collapse();
       let db = grads.of(&b);
       // df/da = 1/(3cbrt(a^2))
-      assert_eq!(db[a], 1.0 / (3.0 * f64::cbrt(1.4 * 1.4)));
+      assert_eq!(db[a], 1.0 / (3.0 * f64::cbrt(1.0 * 1.0)));
     }
   }
 
@@ -1257,11 +1258,12 @@ mod tests {
     #[test]
     fn reset() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(1.0);
-      let grads = guard.collapse();
-      let _da = grads.of(a);
-      tape.reset();
+      { 
+        let guard = tape.guard();
+        let a = &guard.var(1.0);
+        let grads = guard.collapse();
+        let _da = grads.of(a);
+      }
       assert_eq!(tape.snap.nodes, RefCell::new(Vec::new()));
     }
   }

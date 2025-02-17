@@ -38,7 +38,6 @@ fn linear_regression(guard: Guard<'_, '_, Unlocked>) {
         mse = mse + sq_err;
       }
       mse = mse / n;
-      let mse_val = mse.value();
 
       let grads = guard.lock().collapse().of(&mse);
       *w1 = *w1 - learning_rate * grads[&w1];
@@ -49,14 +48,10 @@ fn linear_regression(guard: Guard<'_, '_, Unlocked>) {
       if epoch % 30 == 0 {
         println!(
           "epoch {} | MSE = {:.4} | w1 = {:.4} | w2 = {:.4} | b = {:.4}",
-          epoch,
-          mse_val,
-          w1.value(),
-          w2.value(),
-          b.value()
+          *epoch, *mse, *w1, *w2, *b
         );
       }
-      let _ = writeln!(buf, "{},{}", epoch, mse_val);
+      let _ = writeln!(buf, "{},{}", epoch, *mse);
     });
   }
   println!("trained parameters:");

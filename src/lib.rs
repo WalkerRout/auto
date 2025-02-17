@@ -698,16 +698,9 @@ impl Frames {
   }
 }
 
+#[derive(Default)]
 struct TapeInner {
   frames: RefCell<Frames>,
-}
-
-impl Default for TapeInner {
-  fn default() -> Self {
-    Self {
-      frames: RefCell::new(Frames::default()),
-    }
-  }
 }
 
 impl TapeInner {

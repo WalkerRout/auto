@@ -1,8 +1,9 @@
 use std::cell::{RefCell, RefMut};
-use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Add, BitXor, Deref, DerefMut, Div, Index, Mul, Sub};
+
+use rustc_hash::{FxHashMap, FxHashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 struct NodeIndex(u64);
@@ -641,12 +642,14 @@ impl<'tape, 'scope> BitXor<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
 impl Deref for Var<'_, '_> {
   type Target = f64;
 
+  #[inline(always)]
   fn deref(&self) -> &Self::Target {
     &self.value
   }
 }
 
 impl DerefMut for Var<'_, '_> {
+  #[inline(always)]
   fn deref_mut(&mut self) -> &mut Self::Target {
     &mut self.value
   }
@@ -669,6 +672,7 @@ struct Frame {
 }
 
 impl Frame {
+  #[inline(always)]
   fn add_node(&mut self, pred_a: Predecessor, pred_b: Predecessor) -> NodeIndex {
     let node = self.nodes.len();
     self.nodes.push(Node { pred_a, pred_b });
@@ -682,6 +686,7 @@ struct Frames {
 }
 
 impl Frames {
+  #[inline]
   fn get_node(&self, index: NodeIndex) -> Option<Node> {
     let level = index.level() as usize;
     let idx = index.index() as usize;
@@ -706,6 +711,7 @@ impl Default for TapeInner {
 }
 
 impl TapeInner {
+  #[inline]
   pub fn current_frame_mut(&self) -> RefMut<Frame> {
     RefMut::map(self.frames.borrow_mut(), |frames| {
       frames
@@ -774,6 +780,7 @@ impl<'tape, 'scope> Guard<'tape, 'scope, Unlocked>
 where
   'scope: 'tape,
 {
+  #[inline]
   pub fn var(&self, value: f64) -> Var<'tape, 'scope> {
     let mut current_frame = self.tape.inner.current_frame_mut();
     let index = NodeIndex::new(self.level, current_frame.nodes.len() as u64);
@@ -789,6 +796,7 @@ where
     }
   }
 
+  #[inline]
   pub fn lock(self) -> Guard<'tape, 'scope, Locked> {
     Guard {
       level: self.level,
@@ -802,6 +810,7 @@ impl<'tape, 'scope> Guard<'tape, 'scope, Locked>
 where
   'scope: 'tape,
 {
+  #[inline]
   pub fn scope<F>(&mut self, f: F)
   where
     F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>),
@@ -809,6 +818,7 @@ where
     self.tape.with_scope(self.level + 1, f);
   }
 
+  #[inline]
   pub fn collapse(self) -> Gradients<'tape, 'scope> {
     Gradients {
       tape: self.tape,
@@ -824,10 +834,13 @@ pub struct Gradients<'tape, 'scope> {
   phantom: PhantomData<&'scope ()>,
 }
 
-impl<'tape, 'scope> Gradients<'tape, 'scope> {
+impl<'tape, 'scope> Gradients<'tape, 'scope>
+where
+  'scope: 'tape,
+{
   pub fn of(&self, var: &Var<'tape, 'scope>) -> Deltas<'scope> {
     let subgraph = self.topological_subgraph_of(var);
-    let mut deltas = HashMap::new();
+    let mut deltas = FxHashMap::default();
     deltas.insert(var.index, 1.0);
     for (node, index) in subgraph.into_iter().rev() {
       let Node { pred_a, pred_b } = node;
@@ -846,7 +859,7 @@ impl<'tape, 'scope> Gradients<'tape, 'scope> {
     fn dfs(
       frames: &Frames,
       root: NodeIndex,
-      visited: &mut HashSet<NodeIndex>,
+      visited: &mut FxHashSet<NodeIndex>,
       rsf: &mut Vec<IndexNode>,
     ) {
       // a NodeIndex is just a u64, so we COULD use a bitset...
@@ -861,7 +874,7 @@ impl<'tape, 'scope> Gradients<'tape, 'scope> {
     }
     let nodes = self.tape.inner.frames.borrow();
     let mut result = Vec::new();
-    let mut visited = HashSet::new();
+    let mut visited = FxHashSet::default();
     dfs(&nodes, var.index, &mut visited, &mut result);
     result
   }
@@ -869,11 +882,14 @@ impl<'tape, 'scope> Gradients<'tape, 'scope> {
 
 #[derive(Debug)]
 pub struct Deltas<'scope> {
-  deltas: HashMap<NodeIndex, f64>,
+  deltas: FxHashMap<NodeIndex, f64>,
   phantom: PhantomData<&'scope ()>,
 }
 
-impl<'tape, 'scope> Index<&Var<'tape, 'scope>> for Deltas<'scope> {
+impl<'tape, 'scope> Index<&Var<'tape, 'scope>> for Deltas<'scope>
+where
+  'scope: 'tape,
+{
   type Output = f64;
   fn index(&self, var: &Var<'tape, 'scope>) -> &Self::Output {
     self.deltas.get(&var.index).unwrap_or(&0.0)

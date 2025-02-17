@@ -14,7 +14,7 @@ fn linear_regression(guard: Guard<'_, '_, Unlocked>) {
   }
 
   let learning_rate = 0.02;
-  let epochs = 100000;
+  let epochs = 500000;
 
   let file = File::create("training_loss.csv").unwrap();
   let mut buf = BufWriter::new(file);

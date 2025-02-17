@@ -48,7 +48,7 @@ fn linear_regression(guard: Guard<'_, '_, Unlocked>) {
       if epoch % 30 == 0 {
         println!(
           "epoch {} | MSE = {:.4} | w1 = {:.4} | w2 = {:.4} | b = {:.4}",
-          *epoch, *mse, *w1, *w2, *b
+          epoch, *mse, *w1, *w2, *b
         );
       }
       let _ = writeln!(buf, "{},{}", epoch, *mse);

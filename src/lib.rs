@@ -1,7 +1,7 @@
 use std::cell::{RefCell, RefMut};
 use std::fmt;
 use std::marker::PhantomData;
-use std::ops::{Add, BitXor, Deref, DerefMut, Div, Index, Mul, Sub};
+use std::ops::{Add, BitXor, Deref, DerefMut, Div, Index, Mul, Neg, Sub};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -639,6 +639,22 @@ impl<'tape, 'scope> BitXor<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
   }
 }
 
+impl<'tape, 'scope> Neg for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
+  #[inline(always)]
+  fn neg(self) -> Self::Output {
+    self * -1.0
+  }
+}
+
+impl<'tape, 'scope> Neg for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
+  #[inline(always)]
+  fn neg(self) -> Self::Output {
+    (&self).neg()
+  }
+}
+
 impl Deref for Var<'_, '_> {
   type Target = f64;
 
@@ -1043,6 +1059,20 @@ mod tests {
         let grads = guard.lock().collapse().of(&c);
         // df/da = 3 * a^(3-1)
         assert_eq!(grads[a], 3.0 * f64::powf(2.0, 2.0));
+      });
+    }
+
+    #[test]
+    fn neg() {
+      let mut tape = Tape::new();
+      tape.scope(|guard| {
+        let a = guard.var(2.0);
+        let neg_a = -&a; // using the reference negation operator
+                         // Verify that the value is correctly negated.
+        assert_eq!(neg_a.value(), -2.0);
+        let grads = guard.lock().collapse().of(&neg_a);
+        // For f(x) = -x, the derivative with respect to x should be -1.
+        assert_eq!(grads[&a], -1.0);
       });
     }
 

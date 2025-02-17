@@ -741,29 +741,32 @@ impl Tape {
     Self::default()
   }
 
-  pub fn scope<'tape, F>(&'tape mut self, f: F)
+  pub fn scope<'tape, F, R>(&'tape mut self, f: F) -> R
   where
-    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>),
+    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>) -> R,
   {
-    self.with_scope(0, f);
+    self.with_scope(0, f)
   }
 
-  fn with_scope<'tape, F>(&'tape self, level: u8, f: F)
+  fn with_scope<'tape, F, R>(&'tape self, level: u8, f: F) -> R
   where
-    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>),
+    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>) -> R,
   {
     self.push_frame(Frame {
       level,
       nodes: Vec::new(),
     });
 
-    f(Guard {
+    let guard = Guard {
       level,
       tape: self,
       phantom: PhantomData,
-    });
+    };
+    let output = f(guard);
 
     self.pop_frame();
+
+    output
   }
 
   fn push_frame(&self, frame: Frame) {
@@ -820,11 +823,11 @@ where
   'scope: 'tape,
 {
   #[inline]
-  pub fn scope<F>(&mut self, f: F)
+  pub fn scope<F, R>(&mut self, f: F) -> R
   where
-    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>),
+    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>) -> R,
   {
-    self.tape.with_scope(self.level + 1, f);
+    self.tape.with_scope(self.level + 1, f)
   }
 
   #[inline]

@@ -24,14 +24,16 @@ fn main() {
   
   // Define a scope to play around in
   tape.scope(|guard| {
+    // Create a variable on the guard with value 2.0
     let x = guard.var(2.0);
+    // Create another variable (implicitly on the guard) with dependence on `x`
     let y = x.sin() + x.cos();
     // After locking a guard, we can only spawn more subcomputations, or collapse into gradients
     let grads = guard.lock().collapse().of(&y);
+    // Now we get the gradient of `y` wrt `x`
     println!("Value: {}, dy/dx: {}", *y, grads[&x]);
   });
 }
-
 ```
 
 In this snippet, we create a variable, compute a function, and automatically derive its gradient...

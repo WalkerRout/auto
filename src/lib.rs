@@ -1,761 +1,891 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{RefCell, RefMut};
+use std::fmt;
 use std::marker::PhantomData;
-use std::ops::{Add, BitXor, Div, Index, Mul, Sub};
+use std::ops::{Add, BitXor, Deref, DerefMut, Div, Index, Mul, Sub};
 
-use bit_set::BitSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
-type NodeIndex = usize;
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
+struct NodeIndex(u64);
 
-/// We have code that relies on `NodeIndex` being equal in size to a usize...
-const _: () = {
-  use std::mem::size_of;
-  assert!(size_of::<NodeIndex>() <= size_of::<usize>())
-};
+impl NodeIndex {
+  const LEVEL_MASK: u64 = (1 << 48) - 1;
 
-#[derive(Debug, PartialEq)]
-struct Predecessor {
-  loc: NodeIndex,
-  grad: f64,
+  #[inline(always)]
+  fn new(level: u8, index: u64) -> Self {
+    let level = level as u64;
+    Self((level << 48) | (index & Self::LEVEL_MASK))
+  }
+
+  #[inline(always)]
+  fn level(&self) -> u8 {
+    (self.0 >> 48) as u8
+  }
+
+  #[inline(always)]
+  fn index(&self) -> u64 {
+    self.0 & Self::LEVEL_MASK
+  }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone)]
+struct Predecessor {
+  grad: f64,
+  index: NodeIndex,
+}
+
+#[derive(Clone)]
 struct Node {
   pred_a: Predecessor,
   pred_b: Predecessor,
 }
 
-pub struct Var<'snap> {
+#[derive(Clone)]
+pub struct Var<'tape, 'scope> {
   value: f64,
-  node: NodeIndex,
-  snap: &'snap Snapshot,
+  tape: &'tape Tape,
+  index: NodeIndex,
+  phantom: PhantomData<&'scope ()>,
 }
 
-impl<'snap> Var<'snap> {
-  #[inline]
+impl<'tape, 'scope> Var<'tape, 'scope> {
+  #[inline(always)]
   pub fn value(&self) -> f64 {
     self.value
   }
 
   #[inline]
-  pub fn reciprocal(&self) -> Self {
+  pub fn reciprocal(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(-1.0 / (v * v));
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: 1.0 / v,
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn sin(&self) -> Self {
+  pub fn sin(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v.cos());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.sin(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn cos(&self) -> Self {
+  pub fn cos(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(-v.sin());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.cos(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn tan(&self) -> Self {
+  pub fn tan(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v.cos() * v.cos()));
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.tan(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn ln(&self) -> Self {
+  pub fn ln(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / v);
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.ln(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn log(&self, base: f64) -> Self {
+  pub fn log(&self, base: f64) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v * base.ln()));
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.log(base),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn log10(&self) -> Self {
+  pub fn log10(&self) -> Var<'tape, 'scope> {
     self.log(10.0)
   }
 
   #[inline]
-  pub fn log2(&self) -> Self {
+  pub fn log2(&self) -> Var<'tape, 'scope> {
     self.log(2.0)
   }
 
   #[inline]
-  pub fn asin(&self) -> Self {
+  pub fn asin(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 - v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.asin(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn acos(&self) -> Self {
+  pub fn acos(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(-1.0 / (1.0 - v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.acos(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn atan(&self) -> Self {
+  pub fn atan(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 + v * v));
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.atan(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn sinh(&self) -> Self {
+  pub fn sinh(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v.cosh());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.sinh(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn cosh(&self) -> Self {
+  pub fn cosh(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v.sinh());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.cosh(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn tanh(&self) -> Self {
+  pub fn tanh(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v.cosh() * v.cosh()));
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.tanh(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn asinh(&self) -> Self {
+  pub fn asinh(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 + v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.asinh(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn acosh(&self) -> Self {
+  pub fn acosh(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v * v - 1.0).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.acosh(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn atanh(&self) -> Self {
+  pub fn atanh(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 - v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.atanh(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn exp(&self) -> Self {
+  pub fn exp(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v.exp());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.exp(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn exp2(&self) -> Self {
+  pub fn exp2(&self) -> Var<'tape, 'scope> {
     let v = self.value;
-    let pred_a = self.to_predecessor(v.exp2() * 2.0f64.ln());
+    let pred_a = self.to_predecessor(v.exp2() * 2.0_f64.ln());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.exp2(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
-  /// We explicitly declare a function named `pow` on var,
-  /// since `bitxor` is unclear as to what this does...
+  /// We explicitly declare a function named `pow` on Var since `bitxor` is
+  /// not as descriptive as `add` and `sub`...
   #[inline]
-  pub fn pow(&self, other: &Self) -> Self {
+  pub fn pow(&self, other: &Var<'tape, 'scope>) -> Var<'tape, 'scope> {
     let v = self.value;
     let ov = other.value;
     let pred_a = self.to_predecessor(ov * v.powf(ov - 1.0));
     let pred_b = other.to_predecessor(v.powf(ov) * v.ln());
-    Self {
+    Var {
       value: v.powf(ov),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
-  /// Same as its brother
+  /// Same as sister above, but takes a float exponent
   #[inline]
-  pub fn powf(&self, other: f64) -> Self {
+  pub fn powf(&self, other: f64) -> Var<'tape, 'scope> {
     let v = self.value;
     let ov = other;
     let pred_a = self.to_predecessor(ov * v.powf(ov - 1.0));
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.powf(ov),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn sqrt(&self) -> Self {
-    self.powf(1.0 / 2.0)
+  pub fn sqrt(&self) -> Var<'tape, 'scope> {
+    self.powf(0.5)
   }
 
   #[inline]
-  pub fn cbrt(&self) -> Self {
+  pub fn cbrt(&self) -> Var<'tape, 'scope> {
     self.powf(1.0 / 3.0)
   }
 
   #[inline]
-  pub fn abs(&self) -> Self {
+  pub fn abs(&self) -> Var<'tape, 'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v / v.abs());
     let pred_b = self.to_predecessor(0.0);
-    Self {
+    Var {
       value: v.abs(),
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
   #[inline]
   fn to_predecessor(&self, grad: f64) -> Predecessor {
     Predecessor {
-      loc: self.node,
       grad,
+      index: self.index,
     }
+  }
+
+  #[inline]
+  fn add_node(&self, pred_a: Predecessor, pred_b: Predecessor) -> NodeIndex {
+    self.tape.inner.current_frame_mut().add_node(pred_a, pred_b)
   }
 }
 
-impl<'snap> Add for &Var<'snap> {
-  type Output = Var<'snap>;
+// we implement 2 variants for each binary operation; &a <op> &b and &a <op> f64
+// - owned implementations defer to reference implementations
 
+impl<'tape, 'scope> Add for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline]
   fn add(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = other.to_predecessor(1.0);
-    Self::Output {
+    Var {
       value: self.value + other.value,
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 }
 
-impl<'snap> Add<f64> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Add<f64> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline]
   fn add(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = self.to_predecessor(0.0);
-    Self::Output {
+    Var {
       value: self.value + other,
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 }
 
-impl<'snap> Add<Var<'snap>> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Add<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn add(self, other: Var<'snap>) -> Self::Output {
+  fn add(self, other: Var<'tape, 'scope>) -> Self::Output {
     self.add(&other)
   }
 }
 
-impl<'snap> Add for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Add for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn add(self, other: Self) -> Self::Output {
     (&self).add(&other)
   }
 }
 
-impl<'snap> Add<f64> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Add<f64> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn add(self, other: f64) -> Self::Output {
     (&self).add(other)
   }
 }
 
-impl<'snap> Add<&Var<'snap>> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Add<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn add(self, other: &Var<'snap>) -> Self::Output {
+  fn add(self, other: &Var<'tape, 'scope>) -> Self::Output {
     (&self).add(other)
   }
 }
 
-impl<'snap> Sub for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Sub for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline]
   fn sub(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = other.to_predecessor(-1.0);
-    Self::Output {
+    Var {
       value: self.value - other.value,
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 }
 
-impl<'snap> Sub<f64> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Sub<f64> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline]
   fn sub(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = self.to_predecessor(0.0);
-    Self::Output {
+    Var {
       value: self.value - other,
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 }
 
-impl<'snap> Sub<Var<'snap>> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Sub<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn sub(self, other: Var<'snap>) -> Self::Output {
+  fn sub(self, other: Var<'tape, 'scope>) -> Self::Output {
     self.sub(&other)
   }
 }
 
-impl<'snap> Sub for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Sub for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn sub(self, other: Self) -> Self::Output {
     (&self).sub(&other)
   }
 }
 
-impl<'snap> Sub<f64> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Sub<f64> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn sub(self, other: f64) -> Self::Output {
     (&self).sub(other)
   }
 }
 
-impl<'snap> Sub<&Var<'snap>> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Sub<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn sub(self, other: &Var<'snap>) -> Self::Output {
+  fn sub(self, other: &Var<'tape, 'scope>) -> Self::Output {
     (&self).sub(other)
   }
 }
 
-impl<'snap> Mul for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Mul for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline]
   fn mul(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(other.value);
     let pred_b = other.to_predecessor(self.value);
-    Self::Output {
+    Var {
       value: self.value * other.value,
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 }
 
-impl<'snap> Mul<f64> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Mul<f64> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline]
   fn mul(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(other);
     let pred_b = self.to_predecessor(0.0);
-    Self::Output {
+    Var {
       value: self.value * other,
-      node: self.snap.add_node(pred_a, pred_b),
-      snap: self.snap,
+      index: self.add_node(pred_a, pred_b),
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 }
 
-impl<'snap> Mul<Var<'snap>> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Mul<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn mul(self, other: Var<'snap>) -> Self::Output {
+  fn mul(self, other: Var<'tape, 'scope>) -> Self::Output {
     self.mul(&other)
   }
 }
 
-impl<'snap> Mul for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Mul for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn mul(self, other: Self) -> Self::Output {
     (&self).mul(&other)
   }
 }
 
-impl<'snap> Mul<f64> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Mul<f64> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn mul(self, other: f64) -> Self::Output {
     (&self).mul(other)
   }
 }
 
-impl<'snap> Mul<&Var<'snap>> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Mul<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn mul(self, other: &Var<'snap>) -> Self::Output {
+  fn mul(self, other: &Var<'tape, 'scope>) -> Self::Output {
     (&self).mul(other)
   }
 }
 
-impl<'snap> Div for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Div for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn div(self, other: Self) -> Self::Output {
     self.mul(&other.reciprocal())
   }
 }
 
-impl<'snap> Div<f64> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Div<f64> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn div(self, other: f64) -> Self::Output {
-    self.mul(other.recip())
+    // same thing...
+    self.mul(1.0 / other)
   }
 }
 
-impl<'snap> Div<Var<'snap>> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Div<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn div(self, other: Var<'snap>) -> Self::Output {
+  fn div(self, other: Var<'tape, 'scope>) -> Self::Output {
     self.div(&other)
   }
 }
 
-impl<'snap> Div for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Div for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn div(self, other: Self) -> Self::Output {
     (&self).div(&other)
   }
 }
 
-impl<'snap> Div<f64> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Div<f64> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn div(self, other: f64) -> Self::Output {
     (&self).div(other)
   }
 }
 
-impl<'snap> Div<&Var<'snap>> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> Div<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn div(self, other: &Var<'snap>) -> Self::Output {
+  fn div(self, other: &Var<'tape, 'scope>) -> Self::Output {
     (&self).div(other)
   }
 }
 
-impl<'snap> BitXor for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> BitXor for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn bitxor(self, other: Self) -> Self::Output {
     self.pow(other)
   }
 }
 
-impl<'snap> BitXor<f64> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> BitXor<f64> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn bitxor(self, other: f64) -> Self::Output {
     self.powf(other)
   }
 }
 
-impl<'snap> BitXor<Var<'snap>> for &Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> BitXor<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn bitxor(self, other: Var<'snap>) -> Self::Output {
+  fn bitxor(self, other: Var<'tape, 'scope>) -> Self::Output {
     self.bitxor(&other)
   }
 }
 
-impl<'snap> BitXor for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> BitXor for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn bitxor(self, other: Self) -> Self::Output {
     (&self).bitxor(&other)
   }
 }
 
-impl<'snap> BitXor<f64> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> BitXor<f64> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
   fn bitxor(self, other: f64) -> Self::Output {
     (&self).bitxor(other)
   }
 }
 
-impl<'snap> BitXor<&Var<'snap>> for Var<'snap> {
-  type Output = Var<'snap>;
-
+impl<'tape, 'scope> BitXor<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
+  type Output = Var<'tape, 'scope>;
   #[inline(always)]
-  fn bitxor(self, other: &Var<'snap>) -> Self::Output {
+  fn bitxor(self, other: &Var<'tape, 'scope>) -> Self::Output {
     (&self).bitxor(other)
   }
 }
 
-#[derive(Debug, Default)]
-struct Snapshot {
-  nodes: RefCell<Vec<Node>>,
-}
+impl Deref for Var<'_, '_> {
+  type Target = f64;
 
-impl Snapshot {
-  #[inline]
-  fn var(&self, value: f64) -> Var {
-    let me = self.nodes.borrow().len();
-    Var {
-      value,
-      node: self.add_node(
-        Predecessor { loc: me, grad: 0.0 },
-        Predecessor { loc: me, grad: 0.0 },
-      ),
-      snap: self,
-    }
-  }
-
-  #[inline]
-  fn add_node(&self, pred_a: Predecessor, pred_b: Predecessor) -> NodeIndex {
-    let mut nodes = self.nodes.borrow_mut();
-    let node = nodes.len();
-    nodes.push(Node { pred_a, pred_b });
-    node
+  #[inline(always)]
+  fn deref(&self) -> &Self::Target {
+    &self.value
   }
 }
 
-#[derive(Debug, Default)]
+impl DerefMut for Var<'_, '_> {
+  #[inline(always)]
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.value
+  }
+}
+
+impl fmt::Debug for Var<'_, '_> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("Var")
+      .field("value", &self.value())
+      .field("level", &self.index.level())
+      .field("index", &self.index.index())
+      .finish()
+  }
+}
+
+#[derive(Default, Clone)]
+struct Frame {
+  level: u8,
+  nodes: Vec<Node>,
+}
+
+impl Frame {
+  #[inline(always)]
+  fn add_node(&mut self, pred_a: Predecessor, pred_b: Predecessor) -> NodeIndex {
+    let node = self.nodes.len();
+    self.nodes.push(Node { pred_a, pred_b });
+    NodeIndex::new(self.level, node as u64)
+  }
+}
+
+#[derive(Default)]
+struct Frames {
+  stack: Vec<Frame>,
+}
+
+impl Frames {
+  #[inline]
+  fn get_node(&self, index: NodeIndex) -> Option<Node> {
+    let level = index.level() as usize;
+    let idx = index.index() as usize;
+    self
+      .stack
+      .get(level)
+      .and_then(|frame| frame.nodes.get(idx))
+      .cloned()
+  }
+}
+
+#[derive(Default)]
+struct TapeInner {
+  frames: RefCell<Frames>,
+}
+
+impl TapeInner {
+  #[inline]
+  pub fn current_frame_mut(&self) -> RefMut<Frame> {
+    RefMut::map(self.frames.borrow_mut(), |frames| {
+      frames
+        .stack
+        .last_mut()
+        .expect("there should always be a current frame")
+    })
+  }
+}
+
+#[derive(Default)]
 pub struct Tape {
-  snap: Snapshot,
+  inner: TapeInner,
 }
 
 impl Tape {
   pub fn new() -> Self {
-    Self {
-      snap: Snapshot::default(),
+    Self::default()
+  }
+
+  pub fn scope<'tape, F>(&'tape mut self, f: F)
+  where
+    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>),
+  {
+    self.with_scope(0, f);
+  }
+
+  fn with_scope<'tape, F>(&'tape self, level: u8, f: F)
+  where
+    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>),
+  {
+    self.push_frame(Frame {
+      level,
+      nodes: Vec::new(),
+    });
+
+    f(Guard {
+      level,
+      tape: self,
+      phantom: PhantomData,
+    });
+
+    self.pop_frame();
+  }
+
+  fn push_frame(&self, frame: Frame) {
+    self.inner.frames.borrow_mut().stack.push(frame);
+  }
+
+  fn pop_frame(&self) {
+    self.inner.frames.borrow_mut().stack.pop();
+  }
+}
+
+pub struct Locked;
+
+pub struct Unlocked;
+
+pub struct Guard<'tape, 'scope, S> {
+  level: u8,
+  tape: &'tape Tape,
+  phantom: PhantomData<&'scope S>,
+}
+
+impl<'tape, 'scope> Guard<'tape, 'scope, Unlocked>
+where
+  'scope: 'tape,
+{
+  #[inline]
+  pub fn var(&self, value: f64) -> Var<'tape, 'scope> {
+    let mut current_frame = self.tape.inner.current_frame_mut();
+    let index = NodeIndex::new(self.level, current_frame.nodes.len() as u64);
+    let index = current_frame.add_node(
+      Predecessor { index, grad: 0.0 },
+      Predecessor { index, grad: 0.0 },
+    );
+    Var {
+      value,
+      index,
+      tape: self.tape,
+      phantom: PhantomData,
     }
   }
 
-  pub fn guard(&mut self) -> TapeGuard {
-    TapeGuard { snap: &self.snap }
+  #[inline]
+  pub fn lock(self) -> Guard<'tape, 'scope, Locked> {
+    Guard {
+      level: self.level,
+      tape: self.tape,
+      phantom: PhantomData,
+    }
   }
 }
 
-pub struct TapeGuard<'snap> {
-  snap: &'snap Snapshot,
-}
-
-impl<'snap> TapeGuard<'snap> {
-  #[inline(always)]
-  pub fn var(&self, value: f64) -> Var<'snap> {
-    self.snap.var(value)
+impl<'tape, 'scope> Guard<'tape, 'scope, Locked>
+where
+  'scope: 'tape,
+{
+  #[inline]
+  pub fn scope<F>(&mut self, f: F)
+  where
+    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>),
+  {
+    self.tape.with_scope(self.level + 1, f);
   }
 
-  /// Collapse a guard into gradients, forfeiting exclusive access
-  /// - Gradients carry on the borrow to outstanding Var's
-  pub fn collapse(self) -> Gradients<'snap> {
-    Gradients { snap: self.snap }
+  #[inline]
+  pub fn collapse(self) -> Gradients<'tape, 'scope> {
+    Gradients {
+      tape: self.tape,
+      phantom: PhantomData,
+    }
   }
 }
 
-/// Gradients exist for a specific snapshot of the tape
-/// -> we can get gradients by consuming that snapshot!
-#[derive(Debug)]
-pub struct Gradients<'snap> {
-  snap: &'snap Snapshot,
+type IndexNode = (Node, NodeIndex);
+
+pub struct Gradients<'tape, 'scope> {
+  tape: &'tape Tape,
+  phantom: PhantomData<&'scope ()>,
 }
 
-impl<'snap> Gradients<'snap> {
-  pub fn of(&self, var: &Var<'snap>) -> Deltas<'snap> {
-    let nodes = self.snap.nodes.borrow();
-
-    let mut deltas = HashMap::new();
-    deltas.insert(var.node, 1.0);
-
+impl<'tape, 'scope> Gradients<'tape, 'scope>
+where
+  'scope: 'tape,
+{
+  pub fn of(&self, var: &Var<'tape, 'scope>) -> Deltas<'scope> {
     let subgraph = self.topological_subgraph_of(var);
-
-    for i in subgraph.into_iter().rev() {
-      let Node { pred_a, pred_b } = &nodes[i];
-      let Predecessor {
-        loc: loc_a,
-        grad: grad_a,
-      } = *pred_a;
-      let Predecessor {
-        loc: loc_b,
-        grad: grad_b,
-      } = *pred_b;
-      // a single derivative to apply to our jacobian based accumulation
-      let single = deltas.get(&i).copied().unwrap_or(0.0);
-      *deltas.entry(loc_a).or_insert(0.0) += grad_a * single;
-      *deltas.entry(loc_b).or_insert(0.0) += grad_b * single;
+    let mut deltas = FxHashMap::default();
+    deltas.insert(var.index, 1.0);
+    for (node, index) in subgraph.into_iter().rev() {
+      let Node { pred_a, pred_b } = node;
+      let single = deltas.get(&index).copied().unwrap_or(0.0);
+      *deltas.entry(pred_a.index).or_insert(0.0) += pred_a.grad * single;
+      *deltas.entry(pred_b.index).or_insert(0.0) += pred_b.grad * single;
     }
-
     Deltas {
       deltas,
-      _phantom: PhantomData,
+      phantom: PhantomData,
     }
   }
 
-  fn topological_subgraph_of(&self, var: &Var<'snap>) -> Vec<NodeIndex> {
-    // TODO: refactor to linear dfs w/ stack
-    fn dfs(nodes: &[Node], root: NodeIndex, visited: &mut BitSet, rsf: &mut Vec<NodeIndex>) {
-      // a NodeIndex is just a usize, so we can use a bitset...
-      if visited.contains(root) {
+  fn topological_subgraph_of(&self, var: &Var<'tape, 'scope>) -> Vec<IndexNode> {
+    // linear dfs was fuckin ugly and also slower than this one...
+    fn dfs(
+      frames: &Frames,
+      root: NodeIndex,
+      visited: &mut FxHashSet<NodeIndex>,
+      rsf: &mut Vec<IndexNode>,
+    ) {
+      // a NodeIndex is just a u64, so we COULD use a bitset...
+      if visited.contains(&root) {
         return;
       }
       visited.insert(root);
-      let Node { pred_a, pred_b } = &nodes[root];
-      dfs(nodes, pred_a.loc, visited, rsf);
-      dfs(nodes, pred_b.loc, visited, rsf);
-      rsf.push(root);
+      let node = frames.get_node(root).unwrap();
+      dfs(frames, node.pred_a.index, visited, rsf);
+      dfs(frames, node.pred_b.index, visited, rsf);
+      rsf.push((node, root));
     }
-    let nodes = self.snap.nodes.borrow();
+    let nodes = self.tape.inner.frames.borrow();
     let mut result = Vec::new();
-    let mut visited = BitSet::new();
-    dfs(&nodes, var.node, &mut visited, &mut result);
+    let mut visited = FxHashSet::default();
+    dfs(&nodes, var.index, &mut visited, &mut result);
     result
   }
 }
 
-impl<'snap> Drop for Gradients<'snap> {
-  fn drop(&mut self) {
-    self.snap.nodes.borrow_mut().clear();
-  }
-}
-
 #[derive(Debug)]
-pub struct Deltas<'snap> {
-  deltas: HashMap<NodeIndex, f64>,
-  _phantom: PhantomData<&'snap ()>,
+pub struct Deltas<'scope> {
+  deltas: FxHashMap<NodeIndex, f64>,
+  phantom: PhantomData<&'scope ()>,
 }
 
-impl<'snap> Index<&Var<'snap>> for Deltas<'snap> {
+impl<'tape, 'scope> Index<&Var<'tape, 'scope>> for Deltas<'scope>
+where
+  'scope: 'tape,
+{
   type Output = f64;
-
-  #[inline]
-  fn index(&self, var: &Var<'snap>) -> &Self::Output {
-    self.deltas.get(&var.node).unwrap_or(&0.0)
+  fn index(&self, var: &Var<'tape, 'scope>) -> &Self::Output {
+    self.deltas.get(&var.index).unwrap_or(&0.0)
   }
 }
 
@@ -769,457 +899,454 @@ mod tests {
     #[test]
     fn value() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(1.3);
-      assert_eq!(a.value(), 1.3);
+      tape.scope(|guard| {
+        let a = guard.var(1.3);
+        assert_eq!(a.value(), 1.3);
+      });
     }
 
     #[test]
-    fn add_var() {
+    fn add() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(3.0);
-      let b = &guard.var(4.0);
-      let c = a + b;
-      assert_eq!(c.value(), 3.0 + 4.0);
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = 1
-      // df/db = 1
-      assert_eq!(dc[a], 1.0);
-      assert_eq!(dc[b], 1.0);
+      tape.scope(|guard| {
+        let a = &guard.var(3.0);
+        let b = &guard.var(4.0);
+        let c = a + b;
+        assert_eq!(c.value(), 3.0 + 4.0);
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = 1, df/db = 1
+        assert_eq!(grads[a], 1.0);
+        assert_eq!(grads[b], 1.0);
+      });
     }
 
     #[test]
     fn add_f64() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(3.0);
-      let c = a + 5.0;
-      assert_eq!(c.value(), 3.0 + 5.0);
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = 1
-      assert_eq!(dc[a], 1.0);
+      tape.scope(|guard| {
+        let a = &guard.var(3.0);
+        let c = a + 5.0;
+        assert_eq!(c.value(), 3.0 + 5.0);
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = 1
+        assert_eq!(grads[a], 1.0);
+      });
     }
 
     #[test]
-    fn sub_var() {
+    fn sub() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(7.0);
-      let b = &guard.var(4.0);
-      let c = a - b;
-      assert_eq!(c.value(), 7.0 - 4.0);
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = 1
-      // df/db = -1
-      assert_eq!(dc[a], 1.0);
-      assert_eq!(dc[b], -1.0);
+      tape.scope(|guard| {
+        let a = &guard.var(7.0);
+        let b = &guard.var(4.0);
+        let c = a - b;
+        assert_eq!(c.value(), 7.0 - 4.0);
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = 1, df/db = -1
+        assert_eq!(grads[a], 1.0);
+        assert_eq!(grads[b], -1.0);
+      });
     }
 
     #[test]
     fn sub_f64() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(7.0);
-      let c = a - 3.0;
-      assert_eq!(c.value(), 7.0 - 3.0);
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = 1
-      assert_eq!(dc[a], 1.0);
+      tape.scope(|guard| {
+        let a = &guard.var(7.0);
+        let c = a - 3.0;
+        assert_eq!(c.value(), 7.0 - 3.0);
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = 1
+        assert_eq!(grads[a], 1.0);
+      });
     }
 
     #[test]
-    fn mul_var() {
+    fn mul() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(3.0);
-      let b = &guard.var(4.0);
-      let c = a * b;
-      assert_eq!(c.value(), 3.0 * 4.0);
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = b
-      // df/db = a
-      assert_eq!(dc[a], 4.0);
-      assert_eq!(dc[b], 3.0);
+      tape.scope(|guard| {
+        let a = &guard.var(3.0);
+        let b = &guard.var(4.0);
+        let c = a * b;
+        assert_eq!(c.value(), 3.0 * 4.0);
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = b, df/db = a
+        assert_eq!(grads[a], 4.0);
+        assert_eq!(grads[b], 3.0);
+      });
     }
 
     #[test]
     fn mul_f64() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(3.0);
-      let c = a * 5.0;
-      assert_eq!(c.value(), 3.0 * 5.0);
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = 5
-      assert_eq!(dc[a], 5.0);
+      tape.scope(|guard| {
+        let a = &guard.var(3.0);
+        let c = a * 5.0;
+        assert_eq!(c.value(), 3.0 * 5.0);
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = 5
+        assert_eq!(grads[a], 5.0);
+      });
     }
 
     #[test]
-    fn div_var() {
+    fn div() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(6.0);
-      let b = &guard.var(3.0);
-      let c = a / b;
-      assert_eq!(c.value(), 6.0 / 3.0);
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = 1/b
-      // df/db = -a/b^2
-      assert_eq!(dc[a], 1.0 / 3.0);
-      assert_eq!(dc[b], -6.0 / (3.0 * 3.0));
+      tape.scope(|guard| {
+        let a = &guard.var(6.0);
+        let b = &guard.var(3.0);
+        let c = a / b;
+        assert_eq!(c.value(), 6.0 / 3.0);
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = 1/b, df/db = -a/b^2
+        assert_eq!(grads[a], 1.0 / 3.0);
+        assert_eq!(grads[b], -6.0 / (3.0 * 3.0));
+      });
     }
 
     #[test]
     fn div_f64() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(6.0);
-      let c = a / 2.0;
-      assert_eq!(c.value(), 6.0 / 2.0);
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = 1/2
-      assert_eq!(dc[&a], 1.0 / 2.0);
+      tape.scope(|guard| {
+        let a = &guard.var(6.0);
+        let c = a / 2.0;
+        assert_eq!(c.value(), 6.0 / 2.0);
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = 1/2
+        assert_eq!(grads[a], 1.0 / 2.0);
+      });
     }
 
     #[test]
-    fn bitxor_var() {
+    fn bitxor() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(2.0);
-      let b = &guard.var(3.0);
-      let c = a ^ b;
-      assert_eq!(c.value(), f64::powf(2.0, 3.0));
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = b * a^(b-1)
-      // df/db = a^b * ln(a)
-      assert_eq!(dc[a], 3.0 * f64::powf(2.0, 2.0));
-      assert_eq!(dc[b], f64::powf(2.0, 3.0) * f64::ln(2.0));
+      tape.scope(|guard| {
+        let a = &guard.var(2.0);
+        let b = &guard.var(3.0);
+        let c = a ^ b;
+        assert_eq!(c.value(), f64::powf(2.0, 3.0));
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = b * a^(b-1)
+        // df/db = a^b * ln(a)
+        assert_eq!(grads[a], 3.0 * f64::powf(2.0, 2.0));
+        assert_eq!(grads[b], f64::powf(2.0, 3.0) * f64::ln(2.0));
+      });
     }
 
     #[test]
     fn bitxor_f64() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(2.0);
-      let c = &a ^ 3.0;
-      assert_eq!(c.value(), f64::powf(2.0, 3.0));
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = 3 * a^(3-1)
-      assert_eq!(dc[&a], 3.0 * f64::powf(2.0, 2.0));
+      tape.scope(|guard| {
+        let a = &guard.var(2.0);
+        let c = a ^ 3.0;
+        assert_eq!(c.value(), f64::powf(2.0, 3.0));
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = 3 * a^(3-1)
+        assert_eq!(grads[a], 3.0 * f64::powf(2.0, 2.0));
+      });
     }
 
     #[test]
     fn reciprocal() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(1.3);
-      let b = a.reciprocal();
-      assert_eq!(b.value(), 1.0 / 1.3);
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = -1/a^2
-      assert_eq!(db[&a], -1.0 / (1.3 * 1.3));
+      tape.scope(|guard| {
+        let a = &guard.var(1.3);
+        let b = a.reciprocal();
+        assert_eq!(b.value(), 1.0 / 1.3);
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = -1/a^2
+        assert_eq!(grads[a], -1.0 / (1.3 * 1.3));
+      });
     }
 
     #[test]
     fn sin() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(1.3);
-      let b = a.sin();
-      assert_eq!(b.value(), f64::sin(1.3));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = cos(a)
-      assert_eq!(db[&a], f64::cos(1.3));
+      tape.scope(|guard| {
+        let a = &guard.var(1.3);
+        let b = a.sin();
+        assert_eq!(b.value(), f64::sin(1.3));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = cos(a)
+        assert_eq!(grads[a], f64::cos(1.3));
+      });
     }
 
     #[test]
     fn cos() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(3.1);
-      let b = a.cos();
-      assert_eq!(b.value(), f64::cos(3.1));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = -sin(a)
-      assert_eq!(db[&a], -f64::sin(3.1));
+      tape.scope(|guard| {
+        let a = &guard.var(3.1);
+        let b = a.cos();
+        assert_eq!(b.value(), f64::cos(3.1));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = -sin(a)
+        assert_eq!(grads[a], -f64::sin(3.1));
+      });
     }
 
     #[test]
     fn tan() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(5.6);
-      let b = a.tan();
-      assert_eq!(b.value(), f64::tan(5.6));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = sec^2(a)
-      assert_eq!(db[&a], 1.0 / (f64::cos(5.6).powi(2)));
+      tape.scope(|guard| {
+        let a = &guard.var(5.6);
+        let b = a.tan();
+        assert_eq!(b.value(), f64::tan(5.6));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = sec^2(a)
+        assert_eq!(grads[a], 1.0 / (f64::cos(5.6).powi(2)));
+      });
     }
 
     #[test]
     fn ln() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(5.6);
-      let b = a.ln();
-      assert_eq!(b.value(), f64::ln(5.6));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/a
-      assert_eq!(db[&a], 1.0 / 5.6);
+      tape.scope(|guard| {
+        let a = &guard.var(5.6);
+        let b = a.ln();
+        assert_eq!(b.value(), f64::ln(5.6));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/a
+        assert_eq!(grads[a], 1.0 / 5.6);
+      });
     }
 
     #[test]
     fn log() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(5.6);
-      let base = 3.0;
-      let b = a.log(base);
-      assert_eq!(b.value(), f64::log(5.6, base));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/(aln(b))
-      assert_eq!(db[&a], 1.0 / (5.6 * base.ln()));
+      tape.scope(|guard| {
+        let a = &guard.var(5.6);
+        let base = 3.0;
+        let b = a.log(base);
+        assert_eq!(b.value(), f64::log(5.6, base));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/(a ln(b))
+        assert_eq!(grads[a], 1.0 / (5.6 * base.ln()));
+      });
     }
 
     #[test]
     fn log10() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(1.0);
-      let b = a.log10();
-      assert_eq!(b.value(), f64::log10(1.0));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/(aln(10))
-      assert_eq!(db[&a], 1.0 / (1.0 * f64::ln(10.0)));
+      tape.scope(|guard| {
+        let a = &guard.var(1.0);
+        let b = a.log10();
+        assert_eq!(b.value(), f64::log10(1.0));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/(a ln(10))
+        assert_eq!(grads[a], 1.0 / (1.0 * f64::ln(10.0)));
+      });
     }
 
     #[test]
     fn log2() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(2.0);
-      let b = a.log2();
-      assert_eq!(b.value(), f64::log2(2.0));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/(aln(2))
-      assert_eq!(db[&a], 1.0 / (2.0 * f64::ln(2.0)));
+      tape.scope(|guard| {
+        let a = &guard.var(2.0);
+        let b = a.log2();
+        assert_eq!(b.value(), f64::log2(2.0));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/(a ln(2))
+        assert_eq!(grads[a], 1.0 / (2.0 * f64::ln(2.0)));
+      });
     }
 
     #[test]
     fn asin() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(0.5);
-      let b = a.asin();
-      assert_eq!(b.value(), f64::asin(0.5));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/sqrt(1-a^2)
-      assert_eq!(db[&a], 1.0 / f64::sqrt(1.0 - 0.5 * 0.5));
+      tape.scope(|guard| {
+        let a = &guard.var(0.5);
+        let b = a.asin();
+        assert_eq!(b.value(), f64::asin(0.5));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/sqrt(1-a^2)
+        assert_eq!(grads[a], 1.0 / f64::sqrt(1.0 - 0.5 * 0.5));
+      });
     }
 
     #[test]
     fn acos() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(0.5);
-      let b = a.acos();
-      assert_eq!(b.value(), f64::acos(0.5));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = -1/sqrt(1-a^2)
-      assert_eq!(db[&a], -1.0 / f64::sqrt(1.0 - 0.5 * 0.5));
+      tape.scope(|guard| {
+        let a = &guard.var(0.5);
+        let b = a.acos();
+        assert_eq!(b.value(), f64::acos(0.5));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = -1/sqrt(1-a^2)
+        assert_eq!(grads[a], -1.0 / f64::sqrt(1.0 - 0.5 * 0.5));
+      });
     }
 
     #[test]
     fn atan() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(1.2);
-      let b = a.atan();
-      assert_eq!(b.value(), f64::atan(1.2));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/(1+a^2)
-      assert_eq!(db[&a], 1.0 / (1.0 + 1.2 * 1.2));
+      tape.scope(|guard| {
+        let a = &guard.var(1.2);
+        let b = a.atan();
+        assert_eq!(b.value(), f64::atan(1.2));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/(1+a^2)
+        assert_eq!(grads[a], 1.0 / (1.0 + 1.2 * 1.2));
+      });
     }
 
     #[test]
     fn sinh() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(1.3);
-      let b = a.sinh();
-      assert_eq!(b.value(), f64::sinh(1.3));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = cosh(a)
-      assert_eq!(db[&a], f64::cosh(1.3));
+      tape.scope(|guard| {
+        let a = &guard.var(1.3);
+        let b = a.sinh();
+        assert_eq!(b.value(), f64::sinh(1.3));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = cosh(a)
+        assert_eq!(grads[a], f64::cosh(1.3));
+      });
     }
 
     #[test]
     fn cosh() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(1.3);
-      let b = a.cosh();
-      assert_eq!(b.value(), f64::cosh(1.3));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = sinh(a)
-      assert_eq!(db[&a], f64::sinh(1.3));
+      tape.scope(|guard| {
+        let a = &guard.var(1.3);
+        let b = a.cosh();
+        assert_eq!(b.value(), f64::cosh(1.3));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = sinh(a)
+        assert_eq!(grads[a], f64::sinh(1.3));
+      });
     }
 
     #[test]
     fn tanh() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(0.8);
-      let b = a.tanh();
-      assert_eq!(b.value(), f64::tanh(0.8));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/cosh^2(a)
-      assert_eq!(db[&a], 1.0 / (f64::cosh(0.8) * f64::cosh(0.8)));
+      tape.scope(|guard| {
+        let a = &guard.var(0.8);
+        let b = a.tanh();
+        assert_eq!(b.value(), f64::tanh(0.8));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/cosh^2(a)
+        assert_eq!(grads[a], 1.0 / (f64::cosh(0.8) * f64::cosh(0.8)));
+      });
     }
 
     #[test]
     fn asinh() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = guard.var(1.5);
-      let b = a.asinh();
-      assert_eq!(b.value(), f64::asinh(1.5));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/sqrt(1+a^2)
-      assert_eq!(db[&a], 1.0 / f64::sqrt(1.0 + 1.5 * 1.5));
+      tape.scope(|guard| {
+        let a = &guard.var(1.5);
+        let b = a.asinh();
+        assert_eq!(b.value(), f64::asinh(1.5));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/sqrt(1+a^2)
+        assert_eq!(grads[a], 1.0 / f64::sqrt(1.0 + 1.5 * 1.5));
+      });
     }
 
     #[test]
     fn acosh() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(2.0);
-      let b = a.acosh();
-      assert_eq!(b.value(), f64::acosh(2.0));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/sqrt(a^2-1)
-      assert_eq!(db[a], 1.0 / f64::sqrt(2.0 * 2.0 - 1.0));
+      tape.scope(|guard| {
+        let a = &guard.var(2.0);
+        let b = a.acosh();
+        assert_eq!(b.value(), f64::acosh(2.0));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/sqrt(a^2-1)
+        assert_eq!(grads[a], 1.0 / f64::sqrt(2.0 * 2.0 - 1.0));
+      });
     }
 
     #[test]
     fn atanh() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(0.0);
-      let b = a.atanh();
-      assert_eq!(b.value(), f64::atanh(0.0));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/(1-a^2)
-      assert_eq!(db[a], 1.0 / (1.0 - 0.0 * 0.0));
+      tape.scope(|guard| {
+        let a = &guard.var(0.0);
+        let b = a.atanh();
+        assert_eq!(b.value(), f64::atanh(0.0));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/(1-a^2)
+        assert_eq!(grads[a], 1.0 / (1.0 - 0.0 * 0.0));
+      });
     }
 
     #[test]
     fn exp() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(1.3);
-      let b = a.exp();
-      assert_eq!(b.value(), f64::exp(1.3));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = exp(a)
-      assert_eq!(db[a], f64::exp(1.3));
+      tape.scope(|guard| {
+        let a = &guard.var(1.3);
+        let b = a.exp();
+        assert_eq!(b.value(), f64::exp(1.3));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = exp(a)
+        assert_eq!(grads[a], f64::exp(1.3));
+      });
     }
 
     #[test]
     fn exp2() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(1.3);
-      let b = a.exp2();
-      assert_eq!(b.value(), f64::exp2(1.3));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = exp2(a)ln(2)
-      assert_eq!(db[a], f64::exp2(1.3) * f64::ln(2.0));
+      tape.scope(|guard| {
+        let a = &guard.var(1.3);
+        let b = a.exp2();
+        assert_eq!(b.value(), f64::exp2(1.3));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = exp2(a) * ln(2)
+        assert_eq!(grads[a], f64::exp2(1.3) * f64::ln(2.0));
+      });
     }
 
     #[test]
     fn pow() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(2.0);
-      let b = &guard.var(3.0);
-      let c = a.pow(b);
-      assert_eq!(c.value(), f64::powf(2.0, 3.0));
-      let grads = guard.collapse();
-      let dc = grads.of(&c);
-      // df/da = ba^(b-1)
-      assert_eq!(dc[a], 3.0 * f64::powf(2.0, 3.0 - 1.0));
-      // df/db = a^bln(a)
-      assert_eq!(dc[b], f64::powf(2.0, 3.0) * f64::ln(2.0));
+      tape.scope(|guard| {
+        let a = &guard.var(2.0);
+        let b = &guard.var(3.0);
+        let c = a.pow(b);
+        assert_eq!(c.value(), f64::powf(2.0, 3.0));
+        let grads = guard.lock().collapse().of(&c);
+        // df/da = b * a^(b-1)
+        assert_eq!(grads[a], 3.0 * f64::powf(2.0, 3.0 - 1.0));
+        // df/db = a^b * ln(a)
+        assert_eq!(grads[b], f64::powf(2.0, 3.0) * f64::ln(2.0));
+      });
     }
 
     #[test]
     fn powf() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(2.0);
-      let b = a.powf(3.0);
-      assert_eq!(b.value(), f64::powf(2.0, 3.0));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 3a^(3-1)
-      assert_eq!(db[a], 3.0 * f64::powf(2.0, 3.0 - 1.0));
+      tape.scope(|guard| {
+        let a = &guard.var(2.0);
+        let b = a.powf(3.0);
+        assert_eq!(b.value(), f64::powf(2.0, 3.0));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 3 * a^(3-1)
+        assert_eq!(grads[a], 3.0 * f64::powf(2.0, 3.0 - 1.0));
+      });
     }
 
     #[test]
     fn sqrt() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(4.0);
-      let b = a.sqrt();
-      assert_eq!(b.value(), f64::sqrt(4.0));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/(2sqrt(a))
-      assert_eq!(db[a], 1.0 / (2.0 * f64::sqrt(4.0)));
+      tape.scope(|guard| {
+        let a = &guard.var(4.0);
+        let b = a.sqrt();
+        assert_eq!(b.value(), f64::sqrt(4.0));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/(2*sqrt(a))
+        assert_eq!(grads[a], 1.0 / (2.0 * f64::sqrt(4.0)));
+      });
     }
 
     #[test]
     fn cbrt() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(1.0);
-      let b = a.cbrt();
-      assert_eq!(b.value(), f64::cbrt(1.0));
-      let grads = guard.collapse();
-      let db = grads.of(&b);
-      // df/da = 1/(3cbrt(a^2))
-      assert_eq!(db[a], 1.0 / (3.0 * f64::cbrt(1.0 * 1.0)));
+      tape.scope(|guard| {
+        let a = &guard.var(1.0);
+        let b = a.cbrt();
+        assert_eq!(b.value(), f64::cbrt(1.0));
+        let grads = guard.lock().collapse().of(&b);
+        // df/da = 1/(3*cbrt(a^2))
+        assert_eq!(grads[a], 1.0 / (3.0 * f64::cbrt(1.0 * 1.0)));
+      });
     }
   }
 
@@ -1229,42 +1356,43 @@ mod tests {
     #[test]
     fn guard() {
       let mut tape = Tape::new();
-      let snap_addr = &tape.snap as *const _;
-      let guard = tape.guard();
-      let a = guard.var(2.0);
-      let b = guard.var(3.0);
-      assert_eq!(a.value, 2.0);
-      assert_eq!(b.value, 3.0);
-      assert_eq!(a.snap as *const _, snap_addr);
-      assert_eq!(b.snap as *const _, snap_addr);
+      tape.scope(|guard| {
+        let a = &guard.var(2.0);
+        let b = &guard.var(3.0);
+        assert_eq!(a.value(), 2.0);
+        assert_eq!(b.value(), 3.0);
+        let a_ptr = a.tape as *const Tape;
+        let b_ptr = b.tape as *const Tape;
+        assert_eq!(a_ptr, b_ptr);
+      });
     }
 
     #[test]
     fn grads() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      // take reference right away since we dont really need to store the actual
-      // var, and we only use references...
-      let a = &guard.var(2.0);
-      let b = &guard.var(3.0);
-      let grads = guard.collapse();
-      assert_eq!(a.value, 2.0);
-      assert_eq!(b.value, 3.0);
-      let da = grads.of(a);
-      assert_eq!(da[a], 1.0);
-      assert_eq!(da[b], 0.0);
+      tape.scope(|guard| {
+        let a = &guard.var(2.0);
+        let b = &guard.var(3.0);
+        let grads = guard.lock().collapse();
+        assert_eq!(a.value(), 2.0);
+        assert_eq!(b.value(), 3.0);
+        let da = grads.of(a);
+        assert_eq!(da[a], 1.0);
+        assert_eq!(da[b], 0.0);
+      });
     }
 
     #[test]
     fn reset() {
       let mut tape = Tape::new();
-      { 
-        let guard = tape.guard();
-        let a = &guard.var(1.0);
-        let grads = guard.collapse();
-        let _da = grads.of(a);
+      {
+        tape.scope(|guard| {
+          let a = &guard.var(1.0);
+          let _da = guard.lock().collapse().of(a);
+        });
       }
-      assert_eq!(tape.snap.nodes, RefCell::new(Vec::new()));
+      // after scope ends frame stack should be empty
+      assert!(tape.inner.frames.borrow().stack.is_empty());
     }
   }
 
@@ -1274,23 +1402,24 @@ mod tests {
     #[test]
     fn of() {
       let mut tape = Tape::new();
-      let guard = tape.guard();
-      let a = &guard.var(5.0);
-      let b = &guard.var(2.0);
-      let c = &guard.var(1.0);
-      let res = a.pow(b).sub(c.asinh().div(2.0)).add(f64::sin(1.0));
-      assert_eq!(
-        res.value(),
-        f64::powf(5.0, 2.0) - f64::asinh(1.0) / 2.0 + f64::sin(1.0)
-      );
-      let grads = guard.collapse();
-      let dres = grads.of(&res);
-      let ga = dres[a]; // df/da
-      let gb = dres[b]; // df/db
-      let gc = dres[c]; // df/dc
-      assert_eq!(ga, 2.0 * 5.0);
-      assert_eq!(gb, 25.0 * 5.0f64.ln());
-      assert_eq!(gc, -1.0 / (2.0 * 2.0f64.sqrt()));
+      tape.scope(|guard| {
+        let a = &guard.var(5.0);
+        let b = &guard.var(2.0);
+        let c = &guard.var(1.0);
+        let res = a.pow(b).sub(c.asinh().div(2.0)).add(f64::sin(1.0));
+        assert_eq!(
+          res.value(),
+          f64::powf(5.0, 2.0) - f64::asinh(1.0) / 2.0 + f64::sin(1.0)
+        );
+        let grads = guard.lock().collapse();
+        let dres = grads.of(&res);
+        let ga = dres[a]; // df/da
+        let gb = dres[b]; // df/db
+        let gc = dres[c]; // df/dc
+        assert_eq!(ga, 2.0 * 5.0);
+        assert_eq!(gb, 25.0 * f64::ln(5.0));
+        assert_eq!(gc, -1.0 / (2.0 * 2.0f64.sqrt()));
+      });
     }
   }
 }

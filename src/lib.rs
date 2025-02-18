@@ -688,6 +688,13 @@ struct Frame {
 }
 
 impl Frame {
+  fn new(level: u8) -> Self {
+    Self {
+      level,
+      nodes: Vec::new(),
+    }
+  }
+
   #[inline(always)]
   fn add_node(&mut self, pred_a: Predecessor, pred_b: Predecessor) -> NodeIndex {
     let node = self.nodes.len();
@@ -752,29 +759,31 @@ impl Tape {
   where
     F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>) -> R,
   {
-    self.push_frame(Frame {
-      level,
-      nodes: Vec::new(),
-    });
-
-    let guard = Guard {
+    let _tape_frame = FrameGuard::new(self, Frame::new(level));
+    f(Guard {
       level,
       tape: self,
       phantom: PhantomData,
-    };
-    let output = f(guard);
-
-    self.pop_frame();
-
-    output
+    })
   }
+}
 
-  fn push_frame(&self, frame: Frame) {
-    self.inner.frames.borrow_mut().stack.push(frame);
+/// Manage/guard the creation/deletion of the tape's stack frame...
+struct FrameGuard<'tape> {
+  tape: &'tape Tape,
+}
+
+impl<'tape> FrameGuard<'tape> {
+  fn new(tape: &'tape Tape, frame: Frame) -> Self {
+    let guard = Self { tape };
+    guard.tape.inner.frames.borrow_mut().stack.push(frame);
+    guard
   }
+}
 
-  fn pop_frame(&self) {
-    self.inner.frames.borrow_mut().stack.pop();
+impl Drop for FrameGuard<'_> {
+  fn drop(&mut self) {
+    self.tape.inner.frames.borrow_mut().stack.pop();
   }
 }
 
@@ -851,7 +860,7 @@ where
   'scope: 'tape,
 {
   pub fn of(&self, var: &Var<'tape, 'scope>) -> Deltas<'scope> {
-    let subgraph = self.topological_subgraph_of(var);
+    let subgraph = topological_subgraph(self.tape, var);
     let mut deltas = FxHashMap::default();
     deltas.insert(var.index, 1.0);
     for (node, index) in subgraph.into_iter().rev() {
@@ -865,31 +874,31 @@ where
       phantom: PhantomData,
     }
   }
+}
 
-  fn topological_subgraph_of(&self, var: &Var<'tape, 'scope>) -> Vec<IndexNode> {
-    // linear dfs was fuckin ugly and also slower than this one...
-    fn dfs(
-      frames: &Frames,
-      root: NodeIndex,
-      visited: &mut FxHashSet<NodeIndex>,
-      rsf: &mut Vec<IndexNode>,
-    ) {
-      // a NodeIndex is just a u64, so we COULD use a bitset...
-      if visited.contains(&root) {
-        return;
-      }
-      visited.insert(root);
-      let node = frames.get_node(root).unwrap();
-      dfs(frames, node.pred_a.index, visited, rsf);
-      dfs(frames, node.pred_b.index, visited, rsf);
-      rsf.push((node, root));
+fn topological_subgraph(tape: &Tape, var: &Var<'_, '_>) -> Vec<IndexNode> {
+  // linear dfs was fuckin ugly and also slower than this one...
+  fn dfs(
+    frames: &Frames,
+    root: NodeIndex,
+    visited: &mut FxHashSet<NodeIndex>,
+    rsf: &mut Vec<IndexNode>,
+  ) {
+    // a NodeIndex is just a u64, so we COULD use a bitset...
+    if visited.contains(&root) {
+      return;
     }
-    let nodes = self.tape.inner.frames.borrow();
-    let mut result = Vec::new();
-    let mut visited = FxHashSet::default();
-    dfs(&nodes, var.index, &mut visited, &mut result);
-    result
+    visited.insert(root);
+    let node = frames.get_node(root).unwrap();
+    dfs(frames, node.pred_a.index, visited, rsf);
+    dfs(frames, node.pred_b.index, visited, rsf);
+    rsf.push((node, root));
   }
+  let nodes = tape.inner.frames.borrow();
+  let mut result = Vec::new();
+  let mut visited = FxHashSet::default();
+  dfs(&nodes, var.index, &mut visited, &mut result);
+  result
 }
 
 #[derive(Debug)]

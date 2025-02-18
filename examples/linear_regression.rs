@@ -1,9 +1,9 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use auto::{Guard, Tape, Unlocked};
+use auto::{Guard, Tape};
 
-fn linear_regression(guard: Guard<'_, '_, Unlocked>) {
+fn linear_regression(guard: Guard<'_, '_>) {
   let x1_data = [1.0, 2.0, 3.0, 4.0, 5.0];
   let x2_data = [2.0, 1.0, 0.0, -1.0, 2.0];
   let mut y_data = Vec::with_capacity(x1_data.len());
@@ -14,7 +14,7 @@ fn linear_regression(guard: Guard<'_, '_, Unlocked>) {
   }
 
   let learning_rate = 0.02;
-  let epochs = 500000;
+  let epochs = 100000;
 
   let file = File::create("training_loss.csv").unwrap();
   let mut buf = BufWriter::new(file);

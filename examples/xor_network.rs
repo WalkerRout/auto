@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use auto::{Guard, Tape, Unlocked, Var};
+use auto::{Guard, Tape, Var};
 
 // a variable's scope cannot exceed its tape, so lets just use the same lifetime
 // for brevity...
@@ -40,7 +40,7 @@ pub struct XorNet<'a> {
 }
 
 impl<'a> XorNet<'a> {
-  pub fn new(guard: &Guard<'a, 'a, Unlocked>) -> Self {
+  pub fn new(guard: &Guard<'a, 'a>) -> Self {
     // fake random initial weights (i dont want to import rand...)
     XorNet {
       w11: guard.var(1.2),
@@ -68,7 +68,7 @@ impl<'a> XorNet<'a> {
     sigmoid(&z_out)
   }
 
-  pub fn train(&mut self, guard: Guard<'a, '_, Unlocked>, epochs: usize) -> f64 {
+  pub fn train(&mut self, guard: Guard<'a, '_>, epochs: usize) -> f64 {
     let x1_data = [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0];
     let x2_data = [0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0];
     let y_data = [0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0];

@@ -2,7 +2,7 @@ use std::cell::{RefCell, RefMut};
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Add, BitXor, Deref, DerefMut, Div, Index, Mul, Neg, Sub};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, BuildHasher};
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -789,11 +789,20 @@ impl Drop for FrameGuard<'_> {
   }
 }
 
+/// Phantom type for a locked guard; a locked guard cannot create variables
+/// in that it is not allowed to modify it's scope
+/// 
+/// Honestly we could probably add the ability to transition back to unlocked 
+/// after locking...
 pub struct Locked;
 
+/// Phantom type for an unlocked guard, something we CAN create variables on...
 pub struct Unlocked;
 
-pub struct Guard<'tape, 'scope, S> {
+/// An unlocked `Guard` provides an API to construct variables in a specific scope, 
+/// once a guard is locked it can create subscopes or produce gradients for the 
+/// variables constructed while unlocked...
+pub struct Guard<'tape, 'scope, S = Unlocked> {
   level: u8,
   tape: &'tape Tape,
   phantom: PhantomData<&'scope S>,
@@ -803,6 +812,9 @@ impl<'tape, 'scope> Guard<'tape, 'scope, Unlocked>
 where
   'scope: 'tape,
 {
+  /// Construct a new variable of a specific value; the created variable cannot
+  /// migrate out of the enclosing scope, but it can propagate mutations made in
+  /// lower scopes...
   #[inline]
   pub fn var(&self, value: f64) -> Var<'tape, 'scope> {
     let mut current_frame = self.tape.inner.current_frame_mut();
@@ -819,6 +831,9 @@ where
     }
   }
 
+  /// Lock a guard...
+  ///
+  /// Consume an unlocked guard and produce a locked guard with same lifetimes
   #[inline]
   pub fn lock(self) -> Guard<'tape, 'scope, Locked> {
     Guard {
@@ -833,6 +848,9 @@ impl<'tape, 'scope> Guard<'tape, 'scope, Locked>
 where
   'scope: 'tape,
 {
+  /// A locked guard can spawn additional scopes for computation
+  ///
+  /// Subscopes will themselves provide a new guard for their own scopes...
   #[inline]
   pub fn scope<F, R>(&mut self, f: F) -> R
   where
@@ -841,6 +859,8 @@ where
     self.tape.with_scope(self.level + 1, f)
   }
 
+  /// A locked guard can collapse into gradients for the variables that were
+  /// created on it while unlocked...
   #[inline]
   pub fn collapse(self) -> Gradients<'tape, 'scope> {
     Gradients {
@@ -867,8 +887,25 @@ where
   }
 }
 
-type IndexNode = (Node, NodeIndex);
+/// Unfortunately we need to duplicate the above to work for hashsets too...
+trait HashSetExt {
+  fn with_capacity(x: usize) -> Self;
+}
 
+impl<K, S> HashSetExt for HashSet<K, S>
+where
+  K: Hash + Eq,
+  S: BuildHasher + Default,
+{
+  fn with_capacity(capacity: usize) -> Self {
+    HashSet::with_capacity_and_hasher(capacity, S::default())
+  }
+}
+
+/// An intermediate way to represent an enumerated node...
+type IndexNode = (NodeIndex, Node);
+
+/// Possible derivatives for a specified scope...
 pub struct Gradients<'tape, 'scope> {
   tape: &'tape Tape,
   phantom: PhantomData<&'scope ()>,
@@ -878,12 +915,16 @@ impl<'tape, 'scope> Gradients<'tape, 'scope>
 where
   'scope: 'tape,
 {
+  /// Get the deltas of some variable in some scope
+  ///
+  /// This function is the hottest part of the program, occupying on average ~65%
+  /// of the run time...
   pub fn of(&self, var: &Var<'tape, 'scope>) -> Deltas<'scope> {
     let subgraph = topological_subgraph(self.tape, var);
     // we use our hashmap extension here...
     let mut deltas = FxHashMap::with_capacity(subgraph.len());
     deltas.insert(var.index, 1.0);
-    for (node, index) in subgraph.into_iter().rev() {
+    for (index, node) in subgraph.into_iter().rev() {
       let Node { pred_a, pred_b } = node;
       let single = deltas.get(&index).copied().unwrap_or(0.0);
       *deltas.entry(pred_a.index).or_insert(0.0) += pred_a.grad * single;
@@ -896,33 +937,47 @@ where
   }
 }
 
-// TODO: store in/out degrees and use kahns algorithm
-#[inline]
+/// Topologically sort our graph moving backwards along predecessors of a given
+/// variable...
+///
+/// TODO: store in/out degrees and use kahns algorithm
 fn topological_subgraph(tape: &Tape, var: &Var<'_, '_>) -> Vec<IndexNode> {
-  // linear dfs was fuckin ugly and also slower than this one...
-  fn dfs(
-    frames: &Frames,
-    root: NodeIndex,
-    visited: &mut FxHashSet<NodeIndex>,
-    rsf: &mut Vec<IndexNode>,
-  ) {
-    // a NodeIndex is just a u64, so we could BuildNoHashHasher...
-    if visited.contains(&root) {
-      return;
-    }
-    visited.insert(root);
-    let node = frames.get_node(root).unwrap();
-    dfs(frames, node.pred_a.index, visited, rsf);
-    dfs(frames, node.pred_b.index, visited, rsf);
-    rsf.push((node, root));
-  }
   let nodes = tape.inner.frames.borrow();
-  let mut result = Vec::new();
-  let mut visited = FxHashSet::default();
-  dfs(&nodes, var.index, &mut visited, &mut result);
+  
+  // preallocating a little bit of extra room provides ~20% speedup...
+  let mut stack = Vec::with_capacity(512);
+  let mut result = Vec::with_capacity(512);
+  let mut visited = FxHashSet::with_capacity(512); // extension used here...
+  
+  stack.push((var.index, false));
+
+  // linear dfs for easier tracing... can always revert to prettier recursive...
+  while let Some((node_index, children_processed)) = stack.pop() {
+    if children_processed {
+      // add to result in postorder
+      if let Some(node) = nodes.get_node(node_index) {
+        result.push((node_index, node));
+      }
+    } else if visited.insert(node_index) {
+      // marker to add node after children
+      stack.push((node_index, true));
+      if let Some(node) = nodes.get_node(node_index) {
+        // process pred_a before pred_b, order matters...
+        if !visited.contains(&node.pred_b.index) {
+          stack.push((node.pred_b.index, false));
+        }
+        if !visited.contains(&node.pred_a.index) {
+          stack.push((node.pred_a.index, false));
+        }
+      }
+    }
+  }
+
   result
 }
 
+/// The deltas of some variable in a specified scope; deltas can be with respect
+/// to variables declared in outer scopes...
 #[derive(Debug)]
 pub struct Deltas<'scope> {
   deltas: FxHashMap<NodeIndex, f64>,
@@ -934,6 +989,7 @@ where
   'scope: 'tape,
 {
   type Output = f64;
+
   fn index(&self, var: &Var<'tape, 'scope>) -> &Self::Output {
     self.deltas.get(&var.index).unwrap_or(&0.0)
   }

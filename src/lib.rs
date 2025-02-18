@@ -1,9 +1,9 @@
 use std::cell::{RefCell, RefMut};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 use std::ops::{Add, BitXor, Deref, DerefMut, Div, Index, Mul, Neg, Sub};
-use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, BuildHasher};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -791,16 +791,16 @@ impl Drop for FrameGuard<'_> {
 
 /// Phantom type for a locked guard; a locked guard cannot create variables
 /// in that it is not allowed to modify it's scope
-/// 
-/// Honestly we could probably add the ability to transition back to unlocked 
+///
+/// Honestly we could probably add the ability to transition back to unlocked
 /// after locking...
 pub struct Locked;
 
 /// Phantom type for an unlocked guard, something we CAN create variables on...
 pub struct Unlocked;
 
-/// An unlocked `Guard` provides an API to construct variables in a specific scope, 
-/// once a guard is locked it can create subscopes or produce gradients for the 
+/// An unlocked `Guard` provides an API to construct variables in a specific scope,
+/// once a guard is locked it can create subscopes or produce gradients for the
 /// variables constructed while unlocked...
 pub struct Guard<'tape, 'scope, S = Unlocked> {
   level: u8,
@@ -943,12 +943,12 @@ where
 /// TODO: store in/out degrees and use kahns algorithm
 fn topological_subgraph(tape: &Tape, var: &Var<'_, '_>) -> Vec<IndexNode> {
   let nodes = tape.inner.frames.borrow();
-  
+
   // preallocating a little bit of extra room provides ~20% speedup...
   let mut stack = Vec::with_capacity(512);
   let mut result = Vec::with_capacity(512);
   let mut visited = FxHashSet::with_capacity(512); // extension used here...
-  
+
   stack.push((var.index, false));
 
   // linear dfs for easier tracing... can always revert to prettier recursive...

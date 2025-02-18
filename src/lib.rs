@@ -2,6 +2,8 @@ use std::cell::{RefCell, RefMut};
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops::{Add, BitXor, Deref, DerefMut, Div, Index, Mul, Neg, Sub};
+use std::collections::HashMap;
+use std::hash::{Hash, BuildHasher};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -848,6 +850,23 @@ where
   }
 }
 
+/// We know how big of a hashmap we want to store our deltas in, but we cant
+/// create a map with a given capacity since we need to supply the hasher too...
+trait HashMapExt {
+  fn with_capacity(x: usize) -> Self;
+}
+
+/// Just specialize with_capacity for those maps who have a default hasher...
+impl<K, V, S> HashMapExt for HashMap<K, V, S>
+where
+  K: Hash + Eq,
+  S: BuildHasher + Default,
+{
+  fn with_capacity(capacity: usize) -> Self {
+    HashMap::with_capacity_and_hasher(capacity, S::default())
+  }
+}
+
 type IndexNode = (Node, NodeIndex);
 
 pub struct Gradients<'tape, 'scope> {
@@ -861,7 +880,8 @@ where
 {
   pub fn of(&self, var: &Var<'tape, 'scope>) -> Deltas<'scope> {
     let subgraph = topological_subgraph(self.tape, var);
-    let mut deltas = FxHashMap::default();
+    // we use our hashmap extension here...
+    let mut deltas = FxHashMap::with_capacity(subgraph.len());
     deltas.insert(var.index, 1.0);
     for (node, index) in subgraph.into_iter().rev() {
       let Node { pred_a, pred_b } = node;
@@ -876,6 +896,8 @@ where
   }
 }
 
+// TODO: store in/out degrees and use kahns algorithm
+#[inline]
 fn topological_subgraph(tape: &Tape, var: &Var<'_, '_>) -> Vec<IndexNode> {
   // linear dfs was fuckin ugly and also slower than this one...
   fn dfs(
@@ -884,7 +906,7 @@ fn topological_subgraph(tape: &Tape, var: &Var<'_, '_>) -> Vec<IndexNode> {
     visited: &mut FxHashSet<NodeIndex>,
     rsf: &mut Vec<IndexNode>,
   ) {
-    // a NodeIndex is just a u64, so we COULD use a bitset...
+    // a NodeIndex is just a u64, so we could BuildNoHashHasher...
     if visited.contains(&root) {
       return;
     }

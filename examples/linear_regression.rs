@@ -14,7 +14,7 @@ fn linear_regression(guard: Guard<'_, '_>) {
   }
 
   let learning_rate = 0.02;
-  let epochs = 100000;
+  let epochs = 10_000;
 
   let file = File::create("training_loss.csv").unwrap();
   let mut buf = BufWriter::new(file);
@@ -44,8 +44,7 @@ fn linear_regression(guard: Guard<'_, '_>) {
       *w2 = *w2 - learning_rate * grads[&w2];
       *b = *b - learning_rate * grads[&b];
 
-      #[cfg(debug_assertions)]
-      if epoch % 30 == 0 {
+      if epoch % 1000 == 0 {
         println!(
           "epoch {} | MSE = {:.4} | w1 = {:.4} | w2 = {:.4} | b = {:.4}",
           epoch, *mse, *w1, *w2, *b

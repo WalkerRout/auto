@@ -127,7 +127,7 @@ impl<'a> XorNet<'a> {
 fn main() {
   let mut tape = Tape::new();
   tape.scope(|guard| {
-    let epochs = 50_000;
+    let epochs = 100_000;
     let mut net = XorNet::new(&guard);
     let mut snapshot = guard.lock();
     let final_loss = snapshot.scope(|guard| net.train(guard, epochs));

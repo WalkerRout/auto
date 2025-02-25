@@ -1,5 +1,5 @@
 use std::cell::{RefCell, RefMut};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet, HashMap};
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
@@ -11,25 +11,20 @@ use rustc_hash::{FxHashMap, FxHashSet};
 struct NodeIndex(u64);
 
 impl NodeIndex {
-  const LEVEL_MASK: u64 = (1 << 48) - 1;
-
   #[inline(always)]
   fn new(level: u8, index: u64) -> Self {
     let level = level as u64;
-    Self((level << 48) | (index & Self::LEVEL_MASK))
-    //Self(index << 8 | level)
+    Self(index << 8 | level)
   }
 
   #[inline(always)]
   fn level(&self) -> u8 {
-    (self.0 >> 48) as u8
-    //(self.0 & 0xFF) as u8
+    (self.0 & 0xFF) as u8
   }
 
   #[inline(always)]
   fn index(&self) -> u64 {
-    self.0 & Self::LEVEL_MASK
-    //self.0 >> 8
+    self.0 >> 8
   }
 }
 
@@ -58,7 +53,6 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
   pub fn value(&self) -> f64 {
     self.value
   }
-
 
   #[inline]
   pub fn reciprocal(&self) -> Self {
@@ -589,30 +583,6 @@ impl Frame {
   }
 }
 
-/*
-struct Frames {
-  stack: Vec<Span>,
-  nodes: Vec<Node>,
-}
-
-impl Frames {
-  #[inline(always)]
-  fn add_node(&mut self, pred_a: Predecessor, pred_b: Predecessor) -> NodeIndex {
-    let node = self.nodes.len();
-    self.nodes.push(Node { pred_a, pred_b });
-    *self.active_span_mut().len += 1;
-    NodeIndex::new((self.stack.len() - 1) as u8, node as u64)
-  }
-
-  #[inline]
-  fn get_node(&self, index: NodeIndex) -> Option<&Node> {
-    self.stack
-      .get(index.level())
-      .and_then(|span| self.nodes.get(span.start + span.len))
-  }
-}
-*/
-
 #[derive(Default)]
 struct Frames {
   stack: Vec<Frame>,
@@ -642,12 +612,6 @@ impl TapeInner {
   #[inline]
   pub fn current_frame_mut(&self) -> RefMut<Frame> {
     RefMut::map(self.frames.borrow_mut(), |frames| {
-      /*
-      let Frame { start, .. } = frames.stack.last().expect("always one frame");
-      frames.nodes.split_at_mut(start).1 // maybe wrap this in a struct? thats ideal, but maybe impossible..
-      // produces RefMut<[Node]>?
-      // we only need to call .add_node() and .nodes.len() on this RefMut...
-      */
       frames
         .stack
         .last_mut()
@@ -693,21 +657,7 @@ impl Drop for FrameGuard<'_> {
 /// `TapeInner`...
 ///
 /// Cool things to note:
-/// - We only modify the top frame
-///   - This means we could store the entire computation in a single list of nodes
-///   - But this list of nodes would not have a constant frame size...
-///   - So we need to store a tandem list of frame information
-///     - a list of what are essentially span offsets into the node list...
-///   - When creating a new node on the frame, we would have to use split_at_mut
-///     to subsect the latter half of the node list (the current frame)
-///     - We could treat the tandem list as a stack, with the top frame being
-///       our current scope -> since we just need to O(1) peek the top (stack
-///       always contains at least 1 frame too), we can easily find the starting
-///       index of the current frame into the list of nodes, which represents the
-///       boundary for our split_at_mut...
-/// - We dont actually care much about tape; it is our public interface for the
-///   inner logic... we should be storing a reference to tape inner instead of 
-///   tape...
+/// - We can and will only ever modify what is the top frame
 /// - When we calculate gradients, they are usually of the same shape for a given
 ///   variable... we should store a fingerprint (a graphed-hash)...
 #[derive(Default)]
@@ -756,8 +706,9 @@ where
   /// lower scopes...
   #[inline]
   pub fn var(&self, value: f64) -> Var<'tape, 'scope> {
-    let index = self.tape.add_node(
-      self.level,
+    let mut current_frame = self.tape.current_frame_mut();
+    let index = NodeIndex::new(self.level, current_frame.nodes.len() as u64);
+    let index = current_frame.add_node(
       Predecessor { index, grad: 0.0 },
       Predecessor { index, grad: 0.0 },
     );
@@ -879,7 +830,8 @@ where
 /// Topologically sort our graph moving backwards along predecessors of a given
 /// variable...
 ///
-/// TODO: store in/out degrees and use kahns algorithm
+/// TODO: store in/out degrees and use kahns algorithm + use bitvec for visited...
+//
 fn topological_subgraph(tape: &TapeInner, var: &Var<'_, '_>) -> Vec<IndexNode> {
   let nodes = tape.frames.borrow();
 
@@ -914,41 +866,6 @@ fn topological_subgraph(tape: &TapeInner, var: &Var<'_, '_>) -> Vec<IndexNode> {
 
   result
 }
-/*
-
-fn topological_subgraph(tape: &Tape, var: &Var<'_, '_>) -> Vec<IndexNode> {
-    let mut result = Vec::new();
-    let mut queue = VecDeque::new();
-
-    let mut in_degrees = vec![0; max_possible_nodes]; // Store in-degree counts
-
-    // Populate in-degrees
-    for frame in &tape.inner.frames.borrow().stack {
-        for node in &frame.nodes {
-            in_degrees[node.pred_a.index.index()] += 1;
-            in_degrees[node.pred_b.index.index()] += 1;
-        }
-    }
-
-    // Start with nodes having zero in-degree
-    queue.push_back(var.index);
-
-    while let Some(index) = queue.pop_front() {
-        let node = tape.inner.frames.borrow().get_node(index).unwrap();
-        result.push((index, node));
-
-        // Decrement in-degree of predecessors
-        for pred in &[node.pred_a.index, node.pred_b.index] {
-            in_degrees[pred.index()] -= 1;
-            if in_degrees[pred.index()] == 0 {
-                queue.push_back(*pred);
-            }
-        }
-    }
-
-    result
-}
-*/
 
 /// The deltas of some variable in a specified scope; deltas can be with respect
 /// to variables declared in outer scopes...

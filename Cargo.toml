@@ -5,3 +5,10 @@ edition = "2021"
 
 [dependencies]
 rustc-hash = "2.1.1"
+
+[profile.release]
+#lto = true
+panic = "abort"
+#strip = "symbols"
+opt-level = 3
+#codegen-units = 1

@@ -39,7 +39,7 @@
 //! - Frame guards that automatically clean up computational state
 
 use std::cell::{RefCell, RefMut};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet, HashMap};
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
@@ -51,22 +51,20 @@ use rustc_hash::{FxHashMap, FxHashSet};
 struct NodeIndex(u64);
 
 impl NodeIndex {
-  const LEVEL_MASK: u64 = (1 << 48) - 1;
-
   #[inline(always)]
   fn new(level: u8, index: u64) -> Self {
     let level = level as u64;
-    Self((level << 48) | (index & Self::LEVEL_MASK))
+    Self(index << 8 | level)
   }
 
   #[inline(always)]
   fn level(&self) -> u8 {
-    (self.0 >> 48) as u8
+    (self.0 & 0xFF) as u8
   }
 
   #[inline(always)]
   fn index(&self) -> u64 {
-    self.0 & Self::LEVEL_MASK
+    self.0 >> 8
   }
 }
 
@@ -85,282 +83,211 @@ struct Node {
 #[derive(Clone)]
 pub struct Var<'scope> {
   value: f64,
-  tape: &'scope Tape,
+  tape: &'scope TapeInner,
   index: NodeIndex,
 }
 
-impl<'scope> Var<'scope> {
+impl Var<'_> {
   #[inline(always)]
   pub fn value(&self) -> f64 {
     self.value
   }
 
   #[inline]
-  pub fn reciprocal(&self) -> Var<'scope> {
+  pub fn reciprocal(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(-1.0 / (v * v));
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: 1.0 / v,
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(1.0 / v, pred_a, pred_b)
   }
 
   #[inline]
-  pub fn sin(&self) -> Var<'scope> {
+  pub fn sin(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.cos());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.sin(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.sin(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn cos(&self) -> Var<'scope> {
+  pub fn cos(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(-v.sin());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.cos(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.cos(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn tan(&self) -> Var<'scope> {
+  pub fn tan(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v.cos() * v.cos()));
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.tan(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.tan(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn ln(&self) -> Var<'scope> {
+  pub fn ln(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / v);
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.ln(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.ln(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn log(&self, base: f64) -> Var<'scope> {
+  pub fn log(&self, base: f64) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v * base.ln()));
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.log(base),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.log(base), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn log10(&self) -> Var<'scope> {
+  pub fn log10(&self) -> Self {
     self.log(10.0)
   }
 
   #[inline]
-  pub fn log2(&self) -> Var<'scope> {
+  pub fn log2(&self) -> Self {
     self.log(2.0)
   }
 
   #[inline]
-  pub fn asin(&self) -> Var<'scope> {
+  pub fn asin(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 - v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.asin(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.asin(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn acos(&self) -> Var<'scope> {
+  pub fn acos(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(-1.0 / (1.0 - v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.acos(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.acos(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn atan(&self) -> Var<'scope> {
+  pub fn atan(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 + v * v));
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.atan(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.atan(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn sinh(&self) -> Var<'scope> {
+  pub fn sinh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.cosh());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.sinh(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.sinh(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn cosh(&self) -> Var<'scope> {
+  pub fn cosh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.sinh());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.cosh(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.cosh(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn tanh(&self) -> Var<'scope> {
+  pub fn tanh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v.cosh() * v.cosh()));
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.tanh(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.tanh(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn asinh(&self) -> Var<'scope> {
+  pub fn asinh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 + v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.asinh(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.asinh(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn acosh(&self) -> Var<'scope> {
+  pub fn acosh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v * v - 1.0).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.acosh(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.acosh(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn atanh(&self) -> Var<'scope> {
+  pub fn atanh(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 - v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.atanh(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.atanh(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn exp(&self) -> Var<'scope> {
+  pub fn exp(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.exp());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.exp(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.exp(), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn exp2(&self) -> Var<'scope> {
+  pub fn exp2(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v.exp2() * 2.0_f64.ln());
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.exp2(),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.exp2(), pred_a, pred_b)
   }
 
   /// We explicitly declare a function named `pow` on Var since `bitxor` is
   /// not as descriptive as `add` and `sub`...
   #[inline]
-  pub fn pow(&self, other: &Var<'scope>) -> Var<'scope> {
+  pub fn pow(&self, other: &Self) -> Self {
     let v = self.value;
     let ov = other.value;
     let pred_a = self.to_predecessor(ov * v.powf(ov - 1.0));
     let pred_b = other.to_predecessor(v.powf(ov) * v.ln());
-    Var {
-      value: v.powf(ov),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.powf(ov), pred_a, pred_b)
   }
 
   /// Same as sister above, but takes a float exponent
   #[inline]
-  pub fn powf(&self, other: f64) -> Var<'scope> {
+  pub fn powf(&self, other: f64) -> Self {
     let v = self.value;
     let ov = other;
     let pred_a = self.to_predecessor(ov * v.powf(ov - 1.0));
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: v.powf(ov),
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(v.powf(ov), pred_a, pred_b)
   }
 
   #[inline]
-  pub fn sqrt(&self) -> Var<'scope> {
+  pub fn sqrt(&self) -> Self {
     self.powf(0.5)
   }
 
   #[inline]
-  pub fn cbrt(&self) -> Var<'scope> {
+  pub fn cbrt(&self) -> Self {
     self.powf(1.0 / 3.0)
   }
 
   #[inline]
-  pub fn abs(&self) -> Var<'scope> {
+  pub fn abs(&self) -> Self {
     let v = self.value;
     let pred_a = self.to_predecessor(v / v.abs());
     let pred_b = self.to_predecessor(0.0);
+    self.produce(v.abs(), pred_a, pred_b)
+  }
+
+  #[inline(always)]
+  fn produce(&self, value: f64, pred_a: Predecessor, pred_b: Predecessor) -> Self {
     Var {
-      value: v.abs(),
+      value,
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
     }
   }
 
-  #[inline]
+  #[inline(always)]
   fn to_predecessor(&self, grad: f64) -> Predecessor {
     Predecessor {
       grad,
@@ -370,7 +297,7 @@ impl<'scope> Var<'scope> {
 
   #[inline]
   fn add_node(&self, pred_a: Predecessor, pred_b: Predecessor) -> NodeIndex {
-    self.tape.inner.current_frame_mut().add_node(pred_a, pred_b)
+    self.tape.current_frame_mut().add_node(pred_a, pred_b)
   }
 }
 
@@ -383,11 +310,7 @@ impl<'scope> Add for &Var<'scope> {
   fn add(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = other.to_predecessor(1.0);
-    Var {
-      value: self.value + other.value,
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(self.value + other.value, pred_a, pred_b)
   }
 }
 
@@ -397,11 +320,7 @@ impl<'scope> Add<f64> for &Var<'scope> {
   fn add(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: self.value + other,
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(self.value + other, pred_a, pred_b)
   }
 }
 
@@ -443,11 +362,7 @@ impl<'scope> Sub for &Var<'scope> {
   fn sub(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = other.to_predecessor(-1.0);
-    Var {
-      value: self.value - other.value,
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(self.value - other.value, pred_a, pred_b)
   }
 }
 
@@ -457,11 +372,7 @@ impl<'scope> Sub<f64> for &Var<'scope> {
   fn sub(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: self.value - other,
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(self.value - other, pred_a, pred_b)
   }
 }
 
@@ -503,11 +414,7 @@ impl<'scope> Mul for &Var<'scope> {
   fn mul(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(other.value);
     let pred_b = other.to_predecessor(self.value);
-    Var {
-      value: self.value * other.value,
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(self.value * other.value, pred_a, pred_b)
   }
 }
 
@@ -517,11 +424,7 @@ impl<'scope> Mul<f64> for &Var<'scope> {
   fn mul(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(other);
     let pred_b = self.to_predecessor(0.0);
-    Var {
-      value: self.value * other,
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
-    }
+    self.produce(self.value * other, pred_a, pred_b)
   }
 }
 
@@ -726,6 +629,8 @@ struct Frames {
 impl Frames {
   #[inline]
   fn get_node(&self, index: NodeIndex) -> Option<Node> {
+    // to get a node, we need to know which frame it is on (its level) along with
+    // its index in that level...
     let level = index.level() as usize;
     let idx = index.index() as usize;
     self
@@ -733,6 +638,25 @@ impl Frames {
       .get(level)
       .and_then(|frame| frame.nodes.get(idx))
       .cloned()
+  }
+}
+
+/// Manage/guard the creation/deletion of the tape's stack frame...
+struct FrameGuard<'tape> {
+  tape: &'tape TapeInner,
+}
+
+impl<'tape> FrameGuard<'tape> {
+  fn new(tape: &'tape TapeInner, frame: Frame) -> Self {
+    let guard = Self { tape };
+    guard.tape.frames.borrow_mut().stack.push(frame);
+    guard
+  }
+}
+
+impl Drop for FrameGuard<'_> {
+  fn drop(&mut self) {
+    self.tape.frames.borrow_mut().stack.pop();
   }
 }
 
@@ -751,8 +675,29 @@ impl TapeInner {
         .expect("there should always be a current frame")
     })
   }
+
+  fn with_scope<F, R>(&self, level: u8, f: F) -> R
+  where
+    F: for<'inner> FnOnce(Guard<'inner, Unlocked>) -> R,
+  {
+    let _tape_frame = FrameGuard::new(self, Frame::new(level));
+    f(Guard {
+      level,
+      tape: self as *const TapeInner,
+      phantom: PhantomData,
+    })
+  }
 }
 
+/// A `Tape` is almost like a 'tiered' Wengert list, in that it kind of holds a
+/// stack of frames, with each frame representing a guarded scope, instead of just
+/// a plain old list of nodes... this struct is just a public wrapper around
+/// `TapeInner`...
+///
+/// Cool things to note:
+/// - We can and will only ever modify what is the top frame
+/// - When we calculate gradients, they are usually of the same shape for a given
+///   variable... we should store a fingerprint (a graphed-hash)...
 #[derive(Default)]
 pub struct Tape {
   inner: TapeInner,
@@ -769,39 +714,7 @@ impl Tape {
   {
     // taking a mutable reference to the tape means we have exclusive access in
     // subscopes...
-    let tape_ptr = self as *const Tape;
-    self.with_scope(tape_ptr, 0, f)
-  }
-
-  fn with_scope<F, R>(&self, tape_ptr: *const Tape, level: u8, f: F) -> R
-  where
-    F: for<'inner> FnOnce(Guard<'inner, Unlocked>) -> R,
-  {
-    let _tape_frame = FrameGuard::new(self, Frame::new(level));
-    f(Guard {
-      level,
-      tape: tape_ptr,
-      phantom: PhantomData,
-    })
-  }
-}
-
-/// Manage/guard the creation/deletion of the tape's stack frame...
-struct FrameGuard<'tape> {
-  tape: &'tape Tape,
-}
-
-impl<'tape> FrameGuard<'tape> {
-  fn new(tape: &'tape Tape, frame: Frame) -> Self {
-    let guard = Self { tape };
-    guard.tape.inner.frames.borrow_mut().stack.push(frame);
-    guard
-  }
-}
-
-impl Drop for FrameGuard<'_> {
-  fn drop(&mut self) {
-    self.tape.inner.frames.borrow_mut().stack.pop();
+    self.inner.with_scope(0, f)
   }
 }
 
@@ -820,7 +733,8 @@ pub struct Unlocked;
 /// variables constructed while unlocked...
 pub struct Guard<'scope, S = Unlocked> {
   level: u8,
-  tape: *const Tape,
+  /// Pointer is guaranteed to outlast 'scope...
+  tape: *const TapeInner,
   phantom: PhantomData<&'scope S>,
 }
 
@@ -833,7 +747,7 @@ impl<'scope> Guard<'scope, Unlocked> {
     // Safety: tape is valid for entire computation because it was borrowed
     // mutably at the top scope...
     let tape = unsafe { &*self.tape };
-    let mut current_frame = tape.inner.current_frame_mut();
+    let mut current_frame = tape.current_frame_mut();
     let index = NodeIndex::new(self.level, current_frame.nodes.len() as u64);
     let index = current_frame.add_node(
       Predecessor { index, grad: 0.0 },
@@ -870,8 +784,9 @@ impl<'scope> Guard<'scope, Locked> {
     F: for<'inner> FnOnce(Guard<'inner, Unlocked>) -> R,
   {
     // Safety: tape is valid for entire computation
-    let tape = unsafe { &*self.tape };
-    tape.with_scope(self.tape, self.level + 1, f)
+    let tape: &TapeInner = unsafe { &*self.tape };
+    assert!(self.level < u8::MAX);
+    tape.with_scope(self.level + 1, f)
   }
 
   /// A locked guard can collapse into gradients for the variables that were
@@ -922,7 +837,8 @@ type IndexNode = (NodeIndex, Node);
 
 /// Possible derivatives for a specified scope...
 pub struct Gradients<'scope> {
-  tape: *const Tape,
+  /// Pointer is guaranteed to outlast 'scope...
+  tape: *const TapeInner,
   phantom: PhantomData<&'scope ()>,
 }
 
@@ -957,8 +873,8 @@ impl<'scope> Gradients<'scope> {
 /// variable...
 ///
 /// TODO: store in/out degrees and use kahns algorithm
-fn topological_subgraph(tape: &Tape, var: &Var<'_>) -> Vec<IndexNode> {
-  let nodes = tape.inner.frames.borrow();
+fn topological_subgraph(tape: &TapeInner, var: &Var<'_>) -> Vec<IndexNode> {
+  let nodes = tape.frames.borrow();
 
   // preallocating a little bit of extra room provides ~20% speedup...
   let mut stack = Vec::with_capacity(512);
@@ -1494,8 +1410,8 @@ mod tests {
         let b = &guard.var(3.0);
         assert_eq!(a.value(), 2.0);
         assert_eq!(b.value(), 3.0);
-        let a_ptr = a.tape as *const Tape;
-        let b_ptr = b.tape as *const Tape;
+        let a_ptr = a.tape as *const TapeInner;
+        let b_ptr = b.tape as *const TapeInner;
         assert_eq!(a_ptr, b_ptr);
       });
     }

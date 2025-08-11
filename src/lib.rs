@@ -1,3 +1,43 @@
+//! # auto: Reverse-Mode Automatic Differentiation
+//!
+//! This library provides a safe, efficient implementation of reverse-mode automatic 
+//! differentiation using Rust's type system to enforce memory safety and prevent API
+//! misuse.
+//!
+//! ## Core API
+//!
+//! The main entry point is [`Tape::scope`], which creates a computational scope where
+//! variables can be created and operations performed:
+//!
+//! ```rust
+//! use auto::Tape;
+//!
+//! let mut tape = Tape::new();
+//! tape.scope(|guard| {
+//!   let x = guard.var(2.0);
+//!   let y = guard.var(3.0);
+//!   // z = x*y + 1
+//!   let z = &x * &y + 1.0;
+//!     
+//!   let gradients = guard.lock().collapse().of(&z);
+//!   println!("dz/dx = {}", gradients[&x]); // 3.0
+//!   println!("dz/dy = {}", gradients[&y]); // 2.0
+//! });
+//! ```
+//!
+//! ## Safety Invariants
+//!
+//! The unsafe code in this library maintains these invariants:
+//!
+//! 1. The tape remains valid for the entire duration of any scope created from it
+//! 2. Raw pointers are only dereferenced under the scope where they were created
+//! 3. The computational graph structure is immutable once gradient computation begins
+//!
+//! These invariants are enforced by:
+//! - Taking a mutable borrow of the tape at scope creation
+//! - Typestate-based guards to manage variable lifetimes
+//! - Frame guards that automatically clean up computational state
+
 use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -43,21 +83,20 @@ struct Node {
 }
 
 #[derive(Clone)]
-pub struct Var<'tape, 'scope> {
+pub struct Var<'scope> {
   value: f64,
-  tape: &'tape Tape,
+  tape: &'scope Tape,
   index: NodeIndex,
-  phantom: PhantomData<&'scope ()>,
 }
 
-impl<'tape, 'scope> Var<'tape, 'scope> {
+impl<'scope> Var<'scope> {
   #[inline(always)]
   pub fn value(&self) -> f64 {
     self.value
   }
 
   #[inline]
-  pub fn reciprocal(&self) -> Var<'tape, 'scope> {
+  pub fn reciprocal(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(-1.0 / (v * v));
     let pred_b = self.to_predecessor(0.0);
@@ -65,12 +104,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: 1.0 / v,
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn sin(&self) -> Var<'tape, 'scope> {
+  pub fn sin(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v.cos());
     let pred_b = self.to_predecessor(0.0);
@@ -78,12 +116,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.sin(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn cos(&self) -> Var<'tape, 'scope> {
+  pub fn cos(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(-v.sin());
     let pred_b = self.to_predecessor(0.0);
@@ -91,12 +128,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.cos(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn tan(&self) -> Var<'tape, 'scope> {
+  pub fn tan(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v.cos() * v.cos()));
     let pred_b = self.to_predecessor(0.0);
@@ -104,12 +140,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.tan(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn ln(&self) -> Var<'tape, 'scope> {
+  pub fn ln(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / v);
     let pred_b = self.to_predecessor(0.0);
@@ -117,12 +152,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.ln(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn log(&self, base: f64) -> Var<'tape, 'scope> {
+  pub fn log(&self, base: f64) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v * base.ln()));
     let pred_b = self.to_predecessor(0.0);
@@ -130,22 +164,21 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.log(base),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn log10(&self) -> Var<'tape, 'scope> {
+  pub fn log10(&self) -> Var<'scope> {
     self.log(10.0)
   }
 
   #[inline]
-  pub fn log2(&self) -> Var<'tape, 'scope> {
+  pub fn log2(&self) -> Var<'scope> {
     self.log(2.0)
   }
 
   #[inline]
-  pub fn asin(&self) -> Var<'tape, 'scope> {
+  pub fn asin(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 - v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
@@ -153,12 +186,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.asin(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn acos(&self) -> Var<'tape, 'scope> {
+  pub fn acos(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(-1.0 / (1.0 - v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
@@ -166,12 +198,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.acos(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn atan(&self) -> Var<'tape, 'scope> {
+  pub fn atan(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 + v * v));
     let pred_b = self.to_predecessor(0.0);
@@ -179,12 +210,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.atan(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn sinh(&self) -> Var<'tape, 'scope> {
+  pub fn sinh(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v.cosh());
     let pred_b = self.to_predecessor(0.0);
@@ -192,12 +222,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.sinh(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn cosh(&self) -> Var<'tape, 'scope> {
+  pub fn cosh(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v.sinh());
     let pred_b = self.to_predecessor(0.0);
@@ -205,12 +234,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.cosh(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn tanh(&self) -> Var<'tape, 'scope> {
+  pub fn tanh(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v.cosh() * v.cosh()));
     let pred_b = self.to_predecessor(0.0);
@@ -218,12 +246,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.tanh(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn asinh(&self) -> Var<'tape, 'scope> {
+  pub fn asinh(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 + v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
@@ -231,12 +258,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.asinh(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn acosh(&self) -> Var<'tape, 'scope> {
+  pub fn acosh(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (v * v - 1.0).sqrt());
     let pred_b = self.to_predecessor(0.0);
@@ -244,12 +270,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.acosh(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn atanh(&self) -> Var<'tape, 'scope> {
+  pub fn atanh(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(1.0 / (1.0 - v * v).sqrt());
     let pred_b = self.to_predecessor(0.0);
@@ -257,12 +282,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.atanh(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn exp(&self) -> Var<'tape, 'scope> {
+  pub fn exp(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v.exp());
     let pred_b = self.to_predecessor(0.0);
@@ -270,12 +294,11 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.exp(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn exp2(&self) -> Var<'tape, 'scope> {
+  pub fn exp2(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v.exp2() * 2.0_f64.ln());
     let pred_b = self.to_predecessor(0.0);
@@ -283,14 +306,13 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.exp2(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   /// We explicitly declare a function named `pow` on Var since `bitxor` is
   /// not as descriptive as `add` and `sub`...
   #[inline]
-  pub fn pow(&self, other: &Var<'tape, 'scope>) -> Var<'tape, 'scope> {
+  pub fn pow(&self, other: &Var<'scope>) -> Var<'scope> {
     let v = self.value;
     let ov = other.value;
     let pred_a = self.to_predecessor(ov * v.powf(ov - 1.0));
@@ -299,13 +321,12 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.powf(ov),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   /// Same as sister above, but takes a float exponent
   #[inline]
-  pub fn powf(&self, other: f64) -> Var<'tape, 'scope> {
+  pub fn powf(&self, other: f64) -> Var<'scope> {
     let v = self.value;
     let ov = other;
     let pred_a = self.to_predecessor(ov * v.powf(ov - 1.0));
@@ -314,22 +335,21 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.powf(ov),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
   #[inline]
-  pub fn sqrt(&self) -> Var<'tape, 'scope> {
+  pub fn sqrt(&self) -> Var<'scope> {
     self.powf(0.5)
   }
 
   #[inline]
-  pub fn cbrt(&self) -> Var<'tape, 'scope> {
+  pub fn cbrt(&self) -> Var<'scope> {
     self.powf(1.0 / 3.0)
   }
 
   #[inline]
-  pub fn abs(&self) -> Var<'tape, 'scope> {
+  pub fn abs(&self) -> Var<'scope> {
     let v = self.value;
     let pred_a = self.to_predecessor(v / v.abs());
     let pred_b = self.to_predecessor(0.0);
@@ -337,7 +357,6 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
       value: v.abs(),
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 
@@ -358,8 +377,8 @@ impl<'tape, 'scope> Var<'tape, 'scope> {
 // we implement 2 variants for each binary operation; &a <op> &b and &a <op> f64
 // - owned implementations defer to reference implementations
 
-impl<'tape, 'scope> Add for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Add for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline]
   fn add(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
@@ -368,13 +387,12 @@ impl<'tape, 'scope> Add for &Var<'tape, 'scope> {
       value: self.value + other.value,
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 }
 
-impl<'tape, 'scope> Add<f64> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Add<f64> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline]
   fn add(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
@@ -383,45 +401,44 @@ impl<'tape, 'scope> Add<f64> for &Var<'tape, 'scope> {
       value: self.value + other,
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 }
 
-impl<'tape, 'scope> Add<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Add<Var<'scope>> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn add(self, other: Var<'tape, 'scope>) -> Self::Output {
+  fn add(self, other: Var<'scope>) -> Self::Output {
     self.add(&other)
   }
 }
 
-impl<'tape, 'scope> Add for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Add for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn add(self, other: Self) -> Self::Output {
     (&self).add(&other)
   }
 }
 
-impl<'tape, 'scope> Add<f64> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Add<f64> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn add(self, other: f64) -> Self::Output {
     (&self).add(other)
   }
 }
 
-impl<'tape, 'scope> Add<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Add<&Var<'scope>> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn add(self, other: &Var<'tape, 'scope>) -> Self::Output {
+  fn add(self, other: &Var<'scope>) -> Self::Output {
     (&self).add(other)
   }
 }
 
-impl<'tape, 'scope> Sub for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Sub for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline]
   fn sub(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
@@ -430,13 +447,12 @@ impl<'tape, 'scope> Sub for &Var<'tape, 'scope> {
       value: self.value - other.value,
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 }
 
-impl<'tape, 'scope> Sub<f64> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Sub<f64> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline]
   fn sub(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(1.0);
@@ -445,45 +461,44 @@ impl<'tape, 'scope> Sub<f64> for &Var<'tape, 'scope> {
       value: self.value - other,
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 }
 
-impl<'tape, 'scope> Sub<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Sub<Var<'scope>> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn sub(self, other: Var<'tape, 'scope>) -> Self::Output {
+  fn sub(self, other: Var<'scope>) -> Self::Output {
     self.sub(&other)
   }
 }
 
-impl<'tape, 'scope> Sub for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Sub for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn sub(self, other: Self) -> Self::Output {
     (&self).sub(&other)
   }
 }
 
-impl<'tape, 'scope> Sub<f64> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Sub<f64> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn sub(self, other: f64) -> Self::Output {
     (&self).sub(other)
   }
 }
 
-impl<'tape, 'scope> Sub<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Sub<&Var<'scope>> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn sub(self, other: &Var<'tape, 'scope>) -> Self::Output {
+  fn sub(self, other: &Var<'scope>) -> Self::Output {
     (&self).sub(other)
   }
 }
 
-impl<'tape, 'scope> Mul for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Mul for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline]
   fn mul(self, other: Self) -> Self::Output {
     let pred_a = self.to_predecessor(other.value);
@@ -492,13 +507,12 @@ impl<'tape, 'scope> Mul for &Var<'tape, 'scope> {
       value: self.value * other.value,
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 }
 
-impl<'tape, 'scope> Mul<f64> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Mul<f64> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline]
   fn mul(self, other: f64) -> Self::Output {
     let pred_a = self.to_predecessor(other);
@@ -507,53 +521,52 @@ impl<'tape, 'scope> Mul<f64> for &Var<'tape, 'scope> {
       value: self.value * other,
       index: self.add_node(pred_a, pred_b),
       tape: self.tape,
-      phantom: PhantomData,
     }
   }
 }
 
-impl<'tape, 'scope> Mul<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Mul<Var<'scope>> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn mul(self, other: Var<'tape, 'scope>) -> Self::Output {
+  fn mul(self, other: Var<'scope>) -> Self::Output {
     self.mul(&other)
   }
 }
 
-impl<'tape, 'scope> Mul for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Mul for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn mul(self, other: Self) -> Self::Output {
     (&self).mul(&other)
   }
 }
 
-impl<'tape, 'scope> Mul<f64> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Mul<f64> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn mul(self, other: f64) -> Self::Output {
     (&self).mul(other)
   }
 }
 
-impl<'tape, 'scope> Mul<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Mul<&Var<'scope>> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn mul(self, other: &Var<'tape, 'scope>) -> Self::Output {
+  fn mul(self, other: &Var<'scope>) -> Self::Output {
     (&self).mul(other)
   }
 }
 
-impl<'tape, 'scope> Div for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Div for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn div(self, other: Self) -> Self::Output {
     self.mul(&other.reciprocal())
   }
 }
 
-impl<'tape, 'scope> Div<f64> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Div<f64> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn div(self, other: f64) -> Self::Output {
     // same thing...
@@ -561,103 +574,103 @@ impl<'tape, 'scope> Div<f64> for &Var<'tape, 'scope> {
   }
 }
 
-impl<'tape, 'scope> Div<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Div<Var<'scope>> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn div(self, other: Var<'tape, 'scope>) -> Self::Output {
+  fn div(self, other: Var<'scope>) -> Self::Output {
     self.div(&other)
   }
 }
 
-impl<'tape, 'scope> Div for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Div for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn div(self, other: Self) -> Self::Output {
     (&self).div(&other)
   }
 }
 
-impl<'tape, 'scope> Div<f64> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Div<f64> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn div(self, other: f64) -> Self::Output {
     (&self).div(other)
   }
 }
 
-impl<'tape, 'scope> Div<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Div<&Var<'scope>> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn div(self, other: &Var<'tape, 'scope>) -> Self::Output {
+  fn div(self, other: &Var<'scope>) -> Self::Output {
     (&self).div(other)
   }
 }
 
-impl<'tape, 'scope> BitXor for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> BitXor for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn bitxor(self, other: Self) -> Self::Output {
     self.pow(other)
   }
 }
 
-impl<'tape, 'scope> BitXor<f64> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> BitXor<f64> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn bitxor(self, other: f64) -> Self::Output {
     self.powf(other)
   }
 }
 
-impl<'tape, 'scope> BitXor<Var<'tape, 'scope>> for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> BitXor<Var<'scope>> for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn bitxor(self, other: Var<'tape, 'scope>) -> Self::Output {
+  fn bitxor(self, other: Var<'scope>) -> Self::Output {
     self.bitxor(&other)
   }
 }
 
-impl<'tape, 'scope> BitXor for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> BitXor for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn bitxor(self, other: Self) -> Self::Output {
     (&self).bitxor(&other)
   }
 }
 
-impl<'tape, 'scope> BitXor<f64> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> BitXor<f64> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn bitxor(self, other: f64) -> Self::Output {
     (&self).bitxor(other)
   }
 }
 
-impl<'tape, 'scope> BitXor<&Var<'tape, 'scope>> for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> BitXor<&Var<'scope>> for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
-  fn bitxor(self, other: &Var<'tape, 'scope>) -> Self::Output {
+  fn bitxor(self, other: &Var<'scope>) -> Self::Output {
     (&self).bitxor(other)
   }
 }
 
-impl<'tape, 'scope> Neg for &Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Neg for &Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn neg(self) -> Self::Output {
     self * -1.0
   }
 }
 
-impl<'tape, 'scope> Neg for Var<'tape, 'scope> {
-  type Output = Var<'tape, 'scope>;
+impl<'scope> Neg for Var<'scope> {
+  type Output = Var<'scope>;
   #[inline(always)]
   fn neg(self) -> Self::Output {
     (&self).neg()
   }
 }
 
-impl Deref for Var<'_, '_> {
+impl Deref for Var<'_> {
   type Target = f64;
 
   #[inline(always)]
@@ -666,14 +679,14 @@ impl Deref for Var<'_, '_> {
   }
 }
 
-impl DerefMut for Var<'_, '_> {
+impl DerefMut for Var<'_> {
   #[inline(always)]
   fn deref_mut(&mut self) -> &mut Self::Target {
     &mut self.value
   }
 }
 
-impl fmt::Debug for Var<'_, '_> {
+impl fmt::Debug for Var<'_> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("Var")
       .field("value", &self.value())
@@ -750,21 +763,24 @@ impl Tape {
     Self::default()
   }
 
-  pub fn scope<'tape, F, R>(&'tape mut self, f: F) -> R
+  pub fn scope<F, R>(&mut self, f: F) -> R
   where
-    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>) -> R,
+    F: for<'inner> FnOnce(Guard<'inner, Unlocked>) -> R,
   {
-    self.with_scope(0, f)
+    // taking a mutable reference to the tape means we have exclusive access in
+    // subscopes...
+    let tape_ptr = self as *const Tape;
+    self.with_scope(tape_ptr, 0, f)
   }
 
-  fn with_scope<'tape, F, R>(&'tape self, level: u8, f: F) -> R
+  fn with_scope<F, R>(&self, tape_ptr: *const Tape, level: u8, f: F) -> R
   where
-    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>) -> R,
+    F: for<'inner> FnOnce(Guard<'inner, Unlocked>) -> R,
   {
     let _tape_frame = FrameGuard::new(self, Frame::new(level));
     f(Guard {
       level,
-      tape: self,
+      tape: tape_ptr,
       phantom: PhantomData,
     })
   }
@@ -802,32 +818,32 @@ pub struct Unlocked;
 /// An unlocked `Guard` provides an API to construct variables in a specific scope,
 /// once a guard is locked it can create subscopes or produce gradients for the
 /// variables constructed while unlocked...
-pub struct Guard<'tape, 'scope, S = Unlocked> {
+pub struct Guard<'scope, S = Unlocked> {
   level: u8,
-  tape: &'tape Tape,
+  tape: *const Tape,
   phantom: PhantomData<&'scope S>,
 }
 
-impl<'tape, 'scope> Guard<'tape, 'scope, Unlocked>
-where
-  'scope: 'tape,
-{
+impl<'scope> Guard<'scope, Unlocked> {
   /// Construct a new variable of a specific value; the created variable cannot
   /// migrate out of the enclosing scope, but it can propagate mutations made in
   /// lower scopes...
   #[inline]
-  pub fn var(&self, value: f64) -> Var<'tape, 'scope> {
-    let mut current_frame = self.tape.inner.current_frame_mut();
+  pub fn var(&self, value: f64) -> Var<'scope> {
+    // Safety: tape is valid for entire computation because it was borrowed
+    // mutably at the top scope...
+    let tape = unsafe { &*self.tape };
+    let mut current_frame = tape.inner.current_frame_mut();
     let index = NodeIndex::new(self.level, current_frame.nodes.len() as u64);
     let index = current_frame.add_node(
       Predecessor { index, grad: 0.0 },
       Predecessor { index, grad: 0.0 },
     );
+    
     Var {
       value,
       index,
-      tape: self.tape,
-      phantom: PhantomData,
+      tape,
     }
   }
 
@@ -835,7 +851,7 @@ where
   ///
   /// Consume an unlocked guard and produce a locked guard with same lifetimes
   #[inline]
-  pub fn lock(self) -> Guard<'tape, 'scope, Locked> {
+  pub fn lock(self) -> Guard<'scope, Locked> {
     Guard {
       level: self.level,
       tape: self.tape,
@@ -844,25 +860,24 @@ where
   }
 }
 
-impl<'tape, 'scope> Guard<'tape, 'scope, Locked>
-where
-  'scope: 'tape,
-{
+impl<'scope> Guard<'scope, Locked> {
   /// A locked guard can spawn additional scopes for computation
   ///
   /// Subscopes will themselves provide a new guard for their own scopes...
   #[inline]
   pub fn scope<F, R>(&mut self, f: F) -> R
   where
-    F: for<'inner> FnOnce(Guard<'tape, 'inner, Unlocked>) -> R,
+    F: for<'inner> FnOnce(Guard<'inner, Unlocked>) -> R,
   {
-    self.tape.with_scope(self.level + 1, f)
+    // Safety: tape is valid for entire computation
+    let tape = unsafe { &*self.tape };
+    tape.with_scope(self.tape, self.level + 1, f)
   }
 
   /// A locked guard can collapse into gradients for the variables that were
   /// created on it while unlocked...
   #[inline]
-  pub fn collapse(self) -> Gradients<'tape, 'scope> {
+  pub fn collapse(self) -> Gradients<'scope> {
     Gradients {
       tape: self.tape,
       phantom: PhantomData,
@@ -906,30 +921,31 @@ where
 type IndexNode = (NodeIndex, Node);
 
 /// Possible derivatives for a specified scope...
-pub struct Gradients<'tape, 'scope> {
-  tape: &'tape Tape,
+pub struct Gradients<'scope> {
+  tape: *const Tape,
   phantom: PhantomData<&'scope ()>,
 }
 
-impl<'tape, 'scope> Gradients<'tape, 'scope>
-where
-  'scope: 'tape,
-{
+impl<'scope> Gradients<'scope> {
   /// Get the deltas of some variable in some scope
   ///
   /// This function is the hottest part of the program, occupying on average ~65%
   /// of the run time...
-  pub fn of(&self, var: &Var<'tape, 'scope>) -> Deltas<'scope> {
-    let subgraph = topological_subgraph(self.tape, var);
-    // we use our hashmap extension here...
+  pub fn of(&self, var: &Var<'scope>) -> Deltas<'scope> {
+    // Safety: tape is valid for entire computation
+    let tape = unsafe { &*self.tape };
+    let subgraph = topological_subgraph(tape, var);
+
     let mut deltas = FxHashMap::with_capacity(subgraph.len());
     deltas.insert(var.index, 1.0);
+
     for (index, node) in subgraph.into_iter().rev() {
       let Node { pred_a, pred_b } = node;
       let single = deltas.get(&index).copied().unwrap_or(0.0);
       *deltas.entry(pred_a.index).or_insert(0.0) += pred_a.grad * single;
       *deltas.entry(pred_b.index).or_insert(0.0) += pred_b.grad * single;
     }
+    
     Deltas {
       deltas,
       phantom: PhantomData,
@@ -941,7 +957,7 @@ where
 /// variable...
 ///
 /// TODO: store in/out degrees and use kahns algorithm
-fn topological_subgraph(tape: &Tape, var: &Var<'_, '_>) -> Vec<IndexNode> {
+fn topological_subgraph(tape: &Tape, var: &Var<'_>) -> Vec<IndexNode> {
   let nodes = tape.inner.frames.borrow();
 
   // preallocating a little bit of extra room provides ~20% speedup...
@@ -984,13 +1000,10 @@ pub struct Deltas<'scope> {
   phantom: PhantomData<&'scope ()>,
 }
 
-impl<'tape, 'scope> Index<&Var<'tape, 'scope>> for Deltas<'scope>
-where
-  'scope: 'tape,
-{
+impl<'scope> Index<&Var<'scope>> for Deltas<'scope> {
   type Output = f64;
 
-  fn index(&self, var: &Var<'tape, 'scope>) -> &Self::Output {
+  fn index(&self, var: &Var<'scope>) -> &Self::Output {
     self.deltas.get(&var.index).unwrap_or(&0.0)
   }
 }

@@ -5,12 +5,12 @@ use auto::{Guard, Tape, Var};
 
 // a variable's scope cannot exceed its tape, so lets just use the same lifetime
 // for brevity...
-fn sigmoid<'a>(x: &Var<'a, 'a>) -> Var<'a, 'a> {
+fn sigmoid<'a>(x: &Var<'a>) -> Var<'a> {
   // todo add more f64 <op> var operators...
   ((-x).exp() + 1.0) ^ -1.0
 }
 
-fn binary_cross_entropy<'a>(a: &Var<'a, 'a>, y: f64) -> Var<'a, 'a> {
+fn binary_cross_entropy<'a>(a: &Var<'a>, y: f64) -> Var<'a> {
   let term1 = a.ln() * y;
   let term2 = (-a + 1.0).ln() * (1.0 - y);
   -(term1 + term2)
@@ -26,21 +26,21 @@ fn binary_cross_entropy<'a>(a: &Var<'a, 'a>, y: f64) -> Var<'a, 'a> {
 /// Note: again, we take the same lifetime for tape and scope...
 pub struct XorNet<'a> {
   // hidden params
-  w11: Var<'a, 'a>,
-  w12: Var<'a, 'a>,
-  b1: Var<'a, 'a>,
-  w21: Var<'a, 'a>,
-  w22: Var<'a, 'a>,
-  b2: Var<'a, 'a>,
+  w11: Var<'a>,
+  w12: Var<'a>,
+  b1: Var<'a>,
+  w21: Var<'a>,
+  w22: Var<'a>,
+  b2: Var<'a>,
   // output params
-  v1: Var<'a, 'a>,
-  v2: Var<'a, 'a>,
-  b_out: Var<'a, 'a>,
+  v1: Var<'a>,
+  v2: Var<'a>,
+  b_out: Var<'a>,
   learning_rate: f64,
 }
 
 impl<'a> XorNet<'a> {
-  pub fn new(guard: &Guard<'a, 'a>) -> Self {
+  pub fn new(guard: &Guard<'a>) -> Self {
     // fake random initial weights (i dont want to import rand...)
     XorNet {
       w11: guard.var(1.2),
@@ -56,7 +56,7 @@ impl<'a> XorNet<'a> {
     }
   }
 
-  pub fn forward(&self, x1: f64, x2: f64) -> Var<'a, 'a> {
+  pub fn forward(&self, x1: f64, x2: f64) -> Var<'a> {
     // hidden neuron 1
     let z1 = &self.w11 * x1 + &self.w12 * x2 + &self.b1;
     let a1 = sigmoid(&z1);
@@ -68,7 +68,7 @@ impl<'a> XorNet<'a> {
     sigmoid(&z_out)
   }
 
-  pub fn train(&mut self, guard: Guard<'a, '_>, epochs: usize) -> f64 {
+  pub fn train(&mut self, guard: Guard<'_>, epochs: usize) -> f64 {
     let x1_data = [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0];
     let x2_data = [0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0];
     let y_data = [0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0];
@@ -127,7 +127,7 @@ impl<'a> XorNet<'a> {
 fn main() {
   let mut tape = Tape::new();
   tape.scope(|guard| {
-    let epochs = 50_000;
+    let epochs = 100_000;
     let mut net = XorNet::new(&guard);
     let mut snapshot = guard.lock();
     let final_loss = snapshot.scope(|guard| net.train(guard, epochs));

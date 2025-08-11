@@ -3,7 +3,7 @@ use std::io::{BufWriter, Write};
 
 use auto::{Guard, Tape};
 
-fn linear_regression(guard: Guard<'_, '_>) {
+fn linear_regression(guard: Guard<'_>) {
   let x1_data = [1.0, 2.0, 3.0, 4.0, 5.0];
   let x2_data = [2.0, 1.0, 0.0, -1.0, 2.0];
   let mut y_data = Vec::with_capacity(x1_data.len());

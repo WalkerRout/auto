@@ -1,7 +1,9 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use auto::{Guard, Tape, Var};
+use auto::{Guard, Tape};
+
+type Var<'a> = auto::Var<'a, f64>;
 
 // a variable's scope cannot exceed its tape, so lets just use the same lifetime
 // for brevity...

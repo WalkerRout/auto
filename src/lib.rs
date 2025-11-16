@@ -1,222 +1,90 @@
-//! # auto: Reverse-Mode Automatic Differentiation with Tensor Abstraction
+//! # auto-core: Reverse-Mode Automatic Differentiation Core
 //!
-//! This version abstracts tensor operations behind a `TensorOps` trait, allowing
-//! different backend implementations while maintaining a consistent API.
+//! This crate provides the core computational graph machinery with ZERO assumptions
+//! about the type T being differentiated. All operations are defined externally via
+//! the `PullbackFamily` and `Operation` traits.
+//!
+//! Separate crates (auto-scalar, auto-ndarray, etc.) provide concrete implementations.
 
-use std::cell::{RefCell, RefMut};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
-use std::ops::{Add, BitXor, Deref, DerefMut, Div, Index, Mul, Neg, Sub};
-use std::rc::Rc;
+use std::mem;
+use std::ops::Index;
+
+use noether::operations::ClosedAddAssign;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-/// Trait defining all tensor operations needed by the autodiff system.
-/// Implementations can be provided for scalars (f64), vectors, matrices, or n-d tensors.
-pub trait TensorOps: Clone + fmt::Debug + 'static {
-  /// Create a zero tensor with the same shape as self
-  fn zeros_like(&self) -> Self;
+use smallvec::SmallVec;
 
-  /// Create a ones tensor with the same shape as self
-  fn ones_like(&self) -> Self;
-
-  /// Element-wise addition
-  fn add(&self, other: &Self) -> Self;
-
-  /// Add a scalar to all elements
-  fn add_scalar(&self, scalar: f64) -> Self;
-
-  /// Element-wise subtraction
-  fn sub(&self, other: &Self) -> Self;
-
-  /// Subtract a scalar from all elements
-  fn sub_scalar(&self, scalar: f64) -> Self;
-
-  /// Matrix multiplication (or dot product for vectors, multiplication for scalars)
-  fn matmul(&self, other: &Self) -> Self;
-
-  /// Element-wise multiplication (Hadamard product)
-  fn hadamard(&self, other: &Self) -> Self;
-
-  /// Multiply all elements by a scalar
-  fn mul_scalar(&self, scalar: f64) -> Self;
-
-  /// Element-wise division
-  fn div(&self, other: &Self) -> Self;
-
-  /// Divide all elements by a scalar
-  fn div_scalar(&self, scalar: f64) -> Self;
-
-  /// Element-wise reciprocal
-  fn reciprocal(&self) -> Self;
-
-  /// Element-wise negation
-  fn neg(&self) -> Self;
-
-  /// Element-wise sine
-  fn sin(&self) -> Self;
-
-  /// Element-wise cosine
-  fn cos(&self) -> Self;
-
-  /// Element-wise tangent
-  fn tan(&self) -> Self;
-
-  /// Element-wise natural logarithm
-  fn ln(&self) -> Self;
-
-  /// Element-wise logarithm with specified base
-  fn log(&self, base: f64) -> Self;
-
-  /// Element-wise exponential
-  fn exp(&self) -> Self;
-
-  /// Element-wise power
-  fn pow(&self, exponent: &Self) -> Self;
-
-  /// Element-wise power with scalar exponent
-  fn powf(&self, exponent: f64) -> Self;
-
-  /// Element-wise square root
-  fn sqrt(&self) -> Self;
-
-  /// Element-wise absolute value
-  fn abs(&self) -> Self;
-
-  /// Element-wise hyperbolic sine
-  fn sinh(&self) -> Self;
-
-  /// Element-wise hyperbolic cosine
-  fn cosh(&self) -> Self;
-
-  /// Element-wise hyperbolic tangent
-  fn tanh(&self) -> Self;
-
-  /// Element-wise arcsine
-  fn asin(&self) -> Self;
-
-  /// Element-wise arccosine
-  fn acos(&self) -> Self;
-
-  /// Element-wise arctangent
-  fn atan(&self) -> Self;
-
-  /// Element-wise inverse hyperbolic sine
-  fn asinh(&self) -> Self;
-
-  /// Element-wise inverse hyperbolic cosine
-  fn acosh(&self) -> Self;
-
-  /// Element-wise inverse hyperbolic tangent
-  fn atanh(&self) -> Self;
-
-  /// Transpose (for matrices) or identity (for scalars/vectors)
-  fn transpose(&self) -> Self;
+/// Operation identifier to compose inner and outer operation sets...
+///
+/// The core handles identity (grad passthrough) by default
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum OpId<U> {
+  /// Identity pullback, passes gradient through unchanged
+  Identity,
+  /// User-defined operation, used in tandem with PullbackFamily<T>::Operand
+  User(U),
 }
 
-/// Implementation of TensorOps for f64 (scalar operations)
-impl TensorOps for f64 {
-  fn zeros_like(&self) -> Self {
-    0.0
-  }
-  fn ones_like(&self) -> Self {
-    1.0
-  }
-  fn add(&self, other: &Self) -> Self {
-    self + other
-  }
-  fn add_scalar(&self, scalar: f64) -> Self {
-    self + scalar
-  }
-  fn sub(&self, other: &Self) -> Self {
-    self - other
-  }
-  fn sub_scalar(&self, scalar: f64) -> Self {
-    self - scalar
-  }
-  fn matmul(&self, other: &Self) -> Self {
-    self * other
-  }
-  fn hadamard(&self, other: &Self) -> Self {
-    self * other
-  }
-  fn mul_scalar(&self, scalar: f64) -> Self {
-    self * scalar
-  }
-  fn div(&self, other: &Self) -> Self {
-    self / other
-  }
-  fn div_scalar(&self, scalar: f64) -> Self {
-    self / scalar
-  }
-  fn reciprocal(&self) -> Self {
-    1.0 / self
-  }
-  fn neg(&self) -> Self {
-    -self
-  }
-  fn sin(&self) -> Self {
-    f64::sin(*self)
-  }
-  fn cos(&self) -> Self {
-    f64::cos(*self)
-  }
-  fn tan(&self) -> Self {
-    f64::tan(*self)
-  }
-  fn ln(&self) -> Self {
-    f64::ln(*self)
-  }
-  fn log(&self, base: f64) -> Self {
-    f64::log(*self, base)
-  }
-  fn exp(&self) -> Self {
-    f64::exp(*self)
-  }
-  fn pow(&self, exponent: &Self) -> Self {
-    f64::powf(*self, *exponent)
-  }
-  fn powf(&self, exponent: f64) -> Self {
-    f64::powf(*self, exponent)
-  }
-  fn sqrt(&self) -> Self {
-    f64::sqrt(*self)
-  }
-  fn abs(&self) -> Self {
-    f64::abs(*self)
-  }
-  fn sinh(&self) -> Self {
-    f64::sinh(*self)
-  }
-  fn cosh(&self) -> Self {
-    f64::cosh(*self)
-  }
-  fn tanh(&self) -> Self {
-    f64::tanh(*self)
-  }
-  fn asin(&self) -> Self {
-    f64::asin(*self)
-  }
-  fn acos(&self) -> Self {
-    f64::acos(*self)
-  }
-  fn atan(&self) -> Self {
-    f64::atan(*self)
-  }
-  fn asinh(&self) -> Self {
-    f64::asinh(*self)
-  }
-  fn acosh(&self) -> Self {
-    f64::acosh(*self)
-  }
-  fn atanh(&self) -> Self {
-    f64::atanh(*self)
-  }
-  fn transpose(&self) -> Self {
-    *self
-  }
+/// A family of pullback operations
+///
+/// This trait allows users to define their own operation families with custom
+/// dispatch mechanisms.
+///
+/// Lemma: all n-ary tuples can be constructed through a composition of pairs
+/// Proof: take some tuple (a, b, c, d), then construct, using cantor pairs, (a, (b, (c, d)))
+///
+/// As a result, we only provide an interface for binary functions, as they are
+/// expressive enough to represent unary function symbols, and by the lemma, all
+/// n-ary function symbols (through multiple implementations composed, of course)
+pub trait PullbackFamily<T> {
+  /// User defined operation identifier, usually an enum...
+  type Operand: Clone;
+
+  /// Apply pullback for user-defined operation on binary function arg 1
+  fn apply_a(op: Self::Operand, captures: &[T], upstream: &T) -> T;
+
+  /// Apply pullback for user-defined operation on binary function arg 2
+  fn apply_b(op: Self::Operand, captures: &[T], upstream: &T) -> T;
+}
+
+/// Operation trait for defining forward and pullback computations.
+///
+/// Each concrete operation (Add, Mul, Sin, etc.) implements this trait.
+/// This keeps operations modular - no giant trait with every possible operation.
+pub trait Operation<T, F>
+where
+  F: PullbackFamily<T>,
+{
+  /// Forward computation: binary function T^2 -> T
+  fn forward(&self, a: &T, b: &T) -> T;
+
+  /// Pullback specification: how to compute downstream gradients...
+  fn pullback_spec(&self, a: &T, b: &T) -> PullbackSpec<T, F>;
+}
+
+/// Public spec on how to compute pullbacks for an operation
+pub struct PullbackSpec<T, F: PullbackFamily<T>> {
+  pub op_id_a: OpId<F::Operand>,
+  pub op_id_b: OpId<F::Operand>,
+  pub captures: SmallVec<[T; 2]>,
+}
+
+/// Extension trait for computing gradients of a variable
+///
+/// This trait is implemented by type-specific crates to provide the appropriate 
+/// "unit gradient" (seed) for differentiation
+pub trait Gradient<'scope, T, F>
+where
+  F: PullbackFamily<T>,
+{
+  /// Compute the deltas/gradient set for self
+  fn grad(&self, gradients: &Gradients<'scope, T, F>) -> Deltas<'scope, T>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
@@ -240,668 +108,104 @@ impl NodeIndex {
   }
 }
 
-/// Type alias for gradient computation function
-type GradFn<T> = Rc<dyn Fn(&T) -> T>;
+#[derive(Clone)]
+struct Predecessor<U> {
+  op_id: OpId<U>,
+  node: NodeIndex,
+}
 
-/// A predecessor stores a gradient computation function
-struct Predecessor<T> {
-  grad_fn: GradFn<T>,
+#[derive(Clone)]
+struct Node<T, U> {
+  pred_a: Predecessor<U>,
+  pred_b: Predecessor<U>,
+  captures: SmallVec<[T; 2]>,
+}
+
+struct VarInner<T, U> {
   index: NodeIndex,
+  tape: *const TapeInner<T, U>,
 }
 
-impl<T> Clone for Predecessor<T> {
-  fn clone(&self) -> Self {
-    Self {
-      grad_fn: Rc::clone(&self.grad_fn),
-      index: self.index,
-    }
-  }
-}
-
-#[derive(Clone)]
-struct Node<T> {
-  pred_a: Predecessor<T>,
-  pred_b: Predecessor<T>,
-}
-
-#[derive(Clone)]
-pub struct Var<'scope, T> {
+/// A variable in the computational graph.
+///
+/// Variables are created via `Guard::var()`
+pub struct Var<'scope, T, F: PullbackFamily<T>> {
   value: T,
-  tape: &'scope TapeInner<T>,
-  index: NodeIndex,
+  inner: VarInner<T, F::Operand>,
+  _phantom: PhantomData<&'scope F>,
 }
 
-impl<'scope, T: TensorOps> Var<'scope, T> {
+impl<T, F> Var<'_, T, F>
+where
+  F: PullbackFamily<T>,
+{
+  /// Get the value stored in this variable
   #[inline(always)]
   pub fn value(&self) -> &T {
     &self.value
   }
 
-  /// Element-wise multiplication (Hadamard product)
+  /// Core primitive for constructing new variables from binary operations.
+  ///
+  /// Var provides a generic way of constructing binary operations, but nothing
+  /// else... separate implementations are needed to use operations...
+  ///
+  /// # Example
+  ///
+  /// ```ignore
+  /// impl<'scope, F> Var<'scope, f64, F>
+  /// where
+  ///   F: PullbackFamily<f64>,
+  /// {
+  ///   pub fn add(&self, other: &Self) -> Self {
+  ///     self.binary_op(other, AddOp)
+  ///   }
+  /// }
+  /// ```
   #[inline]
-  pub fn hadamard(&self, other: &Self) -> Self {
-    let v = self.value.clone();
-    let ov = other.value.clone();
-    let result = v.hadamard(&ov);
+  pub fn binary_op(&self, other: &Self, op: impl Operation<T, F>) -> Self {
+    let value = op.forward(&self.value, &other.value);
+    let spec = op.pullback_spec(&self.value, &other.value);
 
-    // d/dx[x ⊙ y] = y (element-wise)
-    let grad_fn_a = Rc::new(move |upstream: &T| upstream.hadamard(&ov));
-    // d/dy[x ⊙ y] = x (element-wise)
-    let grad_fn_b = Rc::new(move |upstream: &T| upstream.hadamard(&v));
-
-    let pred_a = self.to_predecessor(grad_fn_a);
-    let pred_b = other.to_predecessor(grad_fn_b);
-    self.produce(result, pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn reciprocal(&self) -> Self {
-    let v = self.value.clone();
-    let v_recip = v.reciprocal();
-    let v_sq_recip = v_recip.hadamard(&v_recip);
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&v_sq_recip).neg());
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.reciprocal(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn sin(&self) -> Self {
-    let v = self.value.clone();
-    let cos_v = v.cos();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&cos_v));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.sin(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn cos(&self) -> Self {
-    let v = self.value.clone();
-    let neg_sin_v = v.sin().neg();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&neg_sin_v));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.cos(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn tan(&self) -> Self {
-    let v = self.value.clone();
-    let sec_sq = v.cos().reciprocal().powf(2.0);
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&sec_sq));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.tan(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn ln(&self) -> Self {
-    let v = self.value.clone();
-    let v_recip = v.reciprocal();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&v_recip));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.ln(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn log(&self, base: f64) -> Self {
-    let v = self.value.clone();
-    let scale = v.reciprocal().div_scalar(base.ln());
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&scale));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.log(base), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn log10(&self) -> Self {
-    self.log(10.0)
-  }
-
-  #[inline]
-  pub fn log2(&self) -> Self {
-    self.log(2.0)
-  }
-
-  #[inline]
-  pub fn exp(&self) -> Self {
-    let v = self.value.clone();
-    let exp_v = v.exp();
-    let exp_v_clone = exp_v.clone();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&exp_v_clone));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(exp_v, pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn pow(&self, other: &Self) -> Self {
-    let v = self.value.clone();
-    let ov = other.value.clone();
-    let result = v.pow(&ov);
-
-    // d/dx[x^y] = y * x^(y-1)
-    let v_clone = v.clone();
-    let ov_clone = ov.clone();
-    let grad_fn_a = Rc::new(move |upstream: &T| {
-      let grad = ov_clone.hadamard(&v_clone.pow(&ov_clone.sub_scalar(1.0)));
-      upstream.hadamard(&grad)
+    // safety: a var can only be created under a guard's scope, which is always
+    // outlived by the tape... so this is always valid...
+    let index = unsafe { &*self.inner.tape }.map_current_frame_mut(move |frame| {
+      frame.add_node(
+        self.inner.index,
+        spec.op_id_a,
+        other.inner.index,
+        spec.op_id_b,
+        spec.captures,
+      )
     });
 
-    // d/dy[x^y] = x^y * ln(x)
-    let result_clone = result.clone();
-    let ln_v = v.ln();
-    let grad_fn_b = Rc::new(move |upstream: &T| upstream.hadamard(&result_clone.hadamard(&ln_v)));
-
-    let pred_a = self.to_predecessor(grad_fn_a);
-    let pred_b = other.to_predecessor(grad_fn_b);
-    self.produce(result, pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn powf(&self, exponent: f64) -> Self {
-    let v = self.value.clone();
-    let result = v.powf(exponent);
-    let grad = v.powf(exponent - 1.0).mul_scalar(exponent);
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&grad));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(result, pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn sqrt(&self) -> Self {
-    self.powf(0.5)
-  }
-
-  #[inline]
-  pub fn cbrt(&self) -> Self {
-    self.powf(1.0 / 3.0)
-  }
-
-  #[inline]
-  pub fn abs(&self) -> Self {
-    let v = self.value.clone();
-    let sign = v.div(&v.abs());
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&sign));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.abs(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn sinh(&self) -> Self {
-    let v = self.value.clone();
-    let cosh_v = v.cosh();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&cosh_v));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.sinh(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn cosh(&self) -> Self {
-    let v = self.value.clone();
-    let sinh_v = v.sinh();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&sinh_v));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.cosh(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn tanh(&self) -> Self {
-    let v = self.value.clone();
-    let sech_sq = v.cosh().reciprocal().powf(2.0);
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&sech_sq));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.tanh(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn asin(&self) -> Self {
-    let v = self.value.clone();
-    let grad = v.hadamard(&v).neg().add_scalar(1.0).sqrt().reciprocal();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&grad));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.asin(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn acos(&self) -> Self {
-    let v = self.value.clone();
-    let grad = v
-      .hadamard(&v)
-      .neg()
-      .add_scalar(1.0)
-      .sqrt()
-      .reciprocal()
-      .neg();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&grad));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.acos(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn atan(&self) -> Self {
-    let v = self.value.clone();
-    let grad = v.hadamard(&v).add_scalar(1.0).reciprocal();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&grad));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.atan(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn asinh(&self) -> Self {
-    let v = self.value.clone();
-    let grad = v.hadamard(&v).add_scalar(1.0).sqrt().reciprocal();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&grad));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.asinh(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn acosh(&self) -> Self {
-    let v = self.value.clone();
-    let grad = v.hadamard(&v).sub_scalar(1.0).sqrt().reciprocal();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&grad));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.acosh(), pred_a, pred_b)
-  }
-
-  #[inline]
-  pub fn atanh(&self) -> Self {
-    let v = self.value.clone();
-    let grad = v.hadamard(&v).neg().add_scalar(1.0).reciprocal();
-    let grad_fn = Rc::new(move |upstream: &T| upstream.hadamard(&grad));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(v.atanh(), pred_a, pred_b)
-  }
-
-  #[inline(always)]
-  fn produce(&self, value: T, pred_a: Predecessor<T>, pred_b: Predecessor<T>) -> Self {
     Var {
       value,
-      index: self.add_node(pred_a, pred_b),
-      tape: self.tape,
+      inner: VarInner {
+        index,
+        tape: self.inner.tape,
+      },
+      _phantom: PhantomData,
     }
   }
-
-  #[inline(always)]
-  fn to_predecessor(&self, grad_fn: GradFn<T>) -> Predecessor<T> {
-    Predecessor {
-      grad_fn,
-      index: self.index,
-    }
-  }
-
-  #[inline(always)]
-  fn to_predecessor_zero(&self) -> Predecessor<T> {
-    Predecessor {
-      grad_fn: Rc::new(|upstream: &T| upstream.zeros_like()),
-      index: self.index,
-    }
-  }
-
-  #[inline]
-  fn add_node(&self, pred_a: Predecessor<T>, pred_b: Predecessor<T>) -> NodeIndex {
-    self.tape.current_frame_mut().add_node(pred_a, pred_b)
-  }
 }
 
-// Operator implementations - now Mul is matrix multiplication!
-
-impl<'scope, T: TensorOps> Add for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline]
-  fn add(self, other: Self) -> Self::Output {
-    let result = self.value.add(&other.value);
-    let grad_fn_a = Rc::new(|upstream: &T| upstream.clone());
-    let grad_fn_b = Rc::new(|upstream: &T| upstream.clone());
-    let pred_a = self.to_predecessor(grad_fn_a);
-    let pred_b = other.to_predecessor(grad_fn_b);
-    self.produce(result, pred_a, pred_b)
-  }
-}
-
-impl<'scope, T: TensorOps> Add<f64> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline]
-  fn add(self, other: f64) -> Self::Output {
-    let result = self.value.add_scalar(other);
-    let grad_fn = Rc::new(|upstream: &T| upstream.clone());
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(result, pred_a, pred_b)
-  }
-}
-
-impl<'scope, T: TensorOps> Sub for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline]
-  fn sub(self, other: Self) -> Self::Output {
-    let result = self.value.sub(&other.value);
-    let grad_fn_a = Rc::new(|upstream: &T| upstream.clone());
-    let grad_fn_b = Rc::new(|upstream: &T| upstream.neg());
-    let pred_a = self.to_predecessor(grad_fn_a);
-    let pred_b = other.to_predecessor(grad_fn_b);
-    self.produce(result, pred_a, pred_b)
-  }
-}
-
-impl<'scope, T: TensorOps> Sub<f64> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline]
-  fn sub(self, other: f64) -> Self::Output {
-    let result = self.value.sub_scalar(other);
-    let grad_fn = Rc::new(|upstream: &T| upstream.clone());
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(result, pred_a, pred_b)
-  }
-}
-
-// Mul is now matrix multiplication!
-impl<'scope, T: TensorOps> Mul for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline]
-  fn mul(self, other: Self) -> Self::Output {
-    let v = self.value.clone();
-    let ov = other.value.clone();
-    let result = v.matmul(&ov);
-
-    // For matrix multiplication: d/dA[A @ B] = upstream @ B^T
-    let ov_t = ov.transpose();
-    let grad_fn_a = Rc::new(move |upstream: &T| upstream.matmul(&ov_t));
-
-    // d/dB[A @ B] = A^T @ upstream
-    let v_t = v.transpose();
-    let grad_fn_b = Rc::new(move |upstream: &T| v_t.matmul(upstream));
-
-    let pred_a = self.to_predecessor(grad_fn_a);
-    let pred_b = other.to_predecessor(grad_fn_b);
-    self.produce(result, pred_a, pred_b)
-  }
-}
-
-// Scalar multiplication
-impl<'scope, T: TensorOps> Mul<f64> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline]
-  fn mul(self, other: f64) -> Self::Output {
-    let result = self.value.mul_scalar(other);
-    let grad_fn = Rc::new(move |upstream: &T| upstream.mul_scalar(other));
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(result, pred_a, pred_b)
-  }
-}
-
-impl<'scope, T: TensorOps> Div for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline]
-  fn div(self, other: Self) -> Self::Output {
-    let result = self.value.div(&other.value);
-    let ov_recip = other.value.reciprocal();
-    let grad_fn_a = Rc::new(move |upstream: &T| upstream.hadamard(&ov_recip));
-
-    let v = self.value.clone();
-    let ov_sq = other.value.hadamard(&other.value);
-    let grad_fn_b = Rc::new(move |upstream: &T| upstream.hadamard(&v).div(&ov_sq).neg());
-
-    let pred_a = self.to_predecessor(grad_fn_a);
-    let pred_b = other.to_predecessor(grad_fn_b);
-    self.produce(result, pred_a, pred_b)
-  }
-}
-
-impl<'scope, T: TensorOps> Div<f64> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline]
-  fn div(self, other: f64) -> Self::Output {
-    self.mul(1.0 / other)
-  }
-}
-
-impl<'scope, T: TensorOps> BitXor for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn bitxor(self, other: Self) -> Self::Output {
-    self.pow(other)
-  }
-}
-
-impl<'scope, T: TensorOps> BitXor<f64> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn bitxor(self, other: f64) -> Self::Output {
-    self.powf(other)
-  }
-}
-
-impl<'scope, T: TensorOps> Neg for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline]
-  fn neg(self) -> Self::Output {
-    let result = self.value.neg();
-    let grad_fn = Rc::new(|upstream: &T| upstream.neg());
-    let pred_a = self.to_predecessor(grad_fn);
-    let pred_b = self.to_predecessor_zero();
-    self.produce(result, pred_a, pred_b)
-  }
-}
-
-// Forwarding implementations for owned types
-impl<'scope, T: TensorOps> Add<Var<'scope, T>> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn add(self, other: Var<'scope, T>) -> Self::Output {
-    self.add(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> Add for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn add(self, other: Self) -> Self::Output {
-    (&self).add(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> Add<f64> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn add(self, other: f64) -> Self::Output {
-    (&self).add(other)
-  }
-}
-
-impl<'scope, T: TensorOps> Add<&Var<'scope, T>> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn add(self, other: &Var<'scope, T>) -> Self::Output {
-    (&self).add(other)
-  }
-}
-
-impl<'scope, T: TensorOps> Sub<Var<'scope, T>> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn sub(self, other: Var<'scope, T>) -> Self::Output {
-    self.sub(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> Sub for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn sub(self, other: Self) -> Self::Output {
-    (&self).sub(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> Sub<f64> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn sub(self, other: f64) -> Self::Output {
-    (&self).sub(other)
-  }
-}
-
-impl<'scope, T: TensorOps> Sub<&Var<'scope, T>> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn sub(self, other: &Var<'scope, T>) -> Self::Output {
-    (&self).sub(other)
-  }
-}
-
-impl<'scope, T: TensorOps> Mul<Var<'scope, T>> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn mul(self, other: Var<'scope, T>) -> Self::Output {
-    self.mul(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> Mul for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn mul(self, other: Self) -> Self::Output {
-    (&self).mul(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> Mul<f64> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn mul(self, other: f64) -> Self::Output {
-    (&self).mul(other)
-  }
-}
-
-impl<'scope, T: TensorOps> Mul<&Var<'scope, T>> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn mul(self, other: &Var<'scope, T>) -> Self::Output {
-    (&self).mul(other)
-  }
-}
-
-impl<'scope, T: TensorOps> Div<Var<'scope, T>> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn div(self, other: Var<'scope, T>) -> Self::Output {
-    self.div(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> Div for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn div(self, other: Self) -> Self::Output {
-    (&self).div(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> Div<f64> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn div(self, other: f64) -> Self::Output {
-    (&self).div(other)
-  }
-}
-
-impl<'scope, T: TensorOps> Div<&Var<'scope, T>> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn div(self, other: &Var<'scope, T>) -> Self::Output {
-    (&self).div(other)
-  }
-}
-
-impl<'scope, T: TensorOps> BitXor<Var<'scope, T>> for &Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn bitxor(self, other: Var<'scope, T>) -> Self::Output {
-    self.bitxor(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> BitXor for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn bitxor(self, other: Self) -> Self::Output {
-    (&self).bitxor(&other)
-  }
-}
-
-impl<'scope, T: TensorOps> BitXor<f64> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn bitxor(self, other: f64) -> Self::Output {
-    (&self).bitxor(other)
-  }
-}
-
-impl<'scope, T: TensorOps> BitXor<&Var<'scope, T>> for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn bitxor(self, other: &Var<'scope, T>) -> Self::Output {
-    (&self).bitxor(other)
-  }
-}
-
-impl<'scope, T: TensorOps> Neg for Var<'scope, T> {
-  type Output = Var<'scope, T>;
-  #[inline(always)]
-  fn neg(self) -> Self::Output {
-    (&self).neg()
-  }
-}
-
-impl<T: TensorOps> Deref for Var<'_, T> {
-  type Target = T;
-
-  #[inline(always)]
-  fn deref(&self) -> &Self::Target {
-    &self.value
-  }
-}
-
-impl<T: TensorOps> DerefMut for Var<'_, T> {
-  #[inline(always)]
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.value
-  }
-}
-
-impl<T: TensorOps> fmt::Debug for Var<'_, T> {
+impl<T: fmt::Debug, F: PullbackFamily<T>> fmt::Debug for Var<'_, T, F> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("Var")
       .field("value", &self.value)
-      .field("level", &self.index.level())
-      .field("index", &self.index.index())
+      .field("level", &self.inner.index.level())
+      .field("index", &self.inner.index.index())
       .finish()
   }
 }
 
-#[derive(Default, Clone)]
-struct Frame<T> {
+struct Frame<T, U> {
   level: u8,
-  nodes: Vec<Node<T>>,
+  nodes: Vec<Node<T, U>>,
 }
 
-impl<T> Frame<T> {
+impl<T, U> Frame<T, U> {
   fn new(level: u8) -> Self {
     Self {
       level,
@@ -909,129 +213,241 @@ impl<T> Frame<T> {
     }
   }
 
-  #[inline(always)]
-  fn add_node(&mut self, pred_a: Predecessor<T>, pred_b: Predecessor<T>) -> NodeIndex {
-    let node = self.nodes.len();
-    self.nodes.push(Node { pred_a, pred_b });
-    NodeIndex::new(self.level, node as u64)
-  }
-}
-
-#[derive(Default)]
-struct Frames<T> {
-  stack: Vec<Frame<T>>,
-}
-
-impl<T> Frames<T> {
   #[inline]
-  fn get_node(&self, index: NodeIndex) -> Option<&Node<T>> {
-    let level = index.level() as usize;
-    let idx = index.index() as usize;
-    self.stack.get(level).and_then(|frame| frame.nodes.get(idx))
+  fn add_node(
+    &mut self,
+    pred_a_idx: NodeIndex,
+    op_id_a: OpId<U>,
+    pred_b_idx: NodeIndex,
+    op_id_b: OpId<U>,
+    captures: SmallVec<[T; 2]>,
+  ) -> NodeIndex {
+    let node_idx = self.nodes.len();
+    self.nodes.push(Node {
+      pred_a: Predecessor {
+        op_id: op_id_a,
+        node: pred_a_idx,
+      },
+      pred_b: Predecessor {
+        op_id: op_id_b,
+        node: pred_b_idx,
+      },
+      captures,
+    });
+
+    NodeIndex::new(self.level, node_idx as u64)
   }
 }
 
-struct FrameGuard<'tape, T> {
-  tape: &'tape TapeInner<T>,
+impl<T, U> Default for Frame<T, U> {
+  fn default() -> Self {
+    Self {
+      level: 0,
+      nodes: Vec::new(),
+    }
+  }
 }
 
-impl<'tape, T> FrameGuard<'tape, T> {
-  fn new(tape: &'tape TapeInner<T>, frame: Frame<T>) -> Self {
-    let guard = Self { tape };
-    guard.tape.frames.borrow_mut().stack.push(frame);
+struct Frames<T, U> {
+  current: Frame<T, U>,
+  rest: Vec<Frame<T, U>>,
+}
+
+impl<T, U> Default for Frames<T, U> {
+  fn default() -> Self {
+    Self {
+      current: Frame::default(),
+      rest: Vec::new(),
+    }
+  }
+}
+
+impl<T, U> Frames<T, U> {
+  #[inline]
+  fn get_node(&self, index: NodeIndex) -> Option<&Node<T, U>> {
+      // to get a node, we need to know which frame it is on (its level) along with
+    // its index in that level...
+    let level = index.level() as usize;
+    let index = index.index() as usize;
+    if level == self.current.level as usize {
+      self.current.nodes.get(index)
+    } else {
+      self.rest.get(level).and_then(|frame| frame.nodes.get(index))
+    }
+  }
+
+  #[inline]
+  fn push(&mut self, frame: Frame<T, U>) {
+    let old_current = mem::replace(&mut self.current, frame);
+    self.rest.push(old_current);
+  }
+
+  #[inline]
+  fn pop(&mut self) {
+    if let Some(frame) = self.rest.pop() {
+      self.current = frame;
+    }
+  }
+}
+
+struct FrameGuard<'tape, T, U> {
+  tape: *const TapeInner<T, U>,
+  _phantom: PhantomData<&'tape ()>,
+}
+
+impl<'tape, T, U> FrameGuard<'tape, T, U> {
+  fn new(tape: &'tape TapeInner<T, U>, frame: Frame<T, U>) -> Self {
+    let tape_ptr = tape as *const TapeInner<T, U>;
+    let guard = Self {
+      tape: tape_ptr,
+      _phantom: PhantomData,
+    };
+    // safety: tape is bound by 'tape, we guarantee that tape outlives the guard
+    unsafe { &*guard.tape }.frames.borrow_mut().push(frame);
     guard
   }
 }
 
-impl<T> Drop for FrameGuard<'_, T> {
+impl<T, U> Drop for FrameGuard<'_, T, U> {
   fn drop(&mut self) {
-    self.tape.frames.borrow_mut().stack.pop();
+    // safety: self is bound by 'tape, we guarantee that tape outlives self
+    unsafe { &*self.tape }.frames.borrow_mut().pop();
   }
 }
 
-#[derive(Default)]
-struct TapeInner<T> {
-  frames: RefCell<Frames<T>>,
+struct TapeInner<T, U> {
+  frames: RefCell<Frames<T, U>>,
 }
 
-impl<T: TensorOps> TapeInner<T> {
+impl<T, U> Default for TapeInner<T, U> {
+  fn default() -> Self {
+    Self {
+      frames: RefCell::new(Frames::default()),
+    }
+  }
+}
+
+impl<T, U> TapeInner<T, U> {
   #[inline]
-  pub fn current_frame_mut(&self) -> RefMut<Frame<T>> {
-    RefMut::map(self.frames.borrow_mut(), |frames| {
-      frames
-        .stack
-        .last_mut()
-        .expect("there should always be a current frame")
-    })
+  fn map_current_frame_mut<R, G>(&self, f: G) -> R
+  where
+    G: FnOnce(&mut Frame<T, U>) -> R,
+  {
+    let mut frames = self.frames.borrow_mut();
+    f(&mut frames.current)
   }
 
-  fn with_scope<F, R>(&self, level: u8, f: F) -> R
+  fn with_scope<G, R>(&self, level: u8, f: G) -> R
   where
-    F: for<'inner> FnOnce(Guard<'inner, T, Unlocked>) -> R,
+    G: for<'inner> FnOnce(Guard<'inner, T, U, Unlocked>) -> R,
   {
     let _tape_frame = FrameGuard::new(self, Frame::new(level));
     f(Guard {
       level,
-      tape: self as *const TapeInner<T>,
+      tape: self as *const TapeInner<T, U>,
       phantom: PhantomData,
     })
   }
 }
 
-#[derive(Default)]
-pub struct Tape<T> {
-  inner: TapeInner<T>,
+/// A `Tape` is almost like a 'tiered' Wengert list, in that it kind of holds a
+/// stack of frames, with each frame representing a guarded scope, instead of just
+/// a plain old list of nodes... this struct is just a public wrapper around
+/// `TapeInner`...
+///
+/// Cool things to note:
+/// - We can and will only ever modify what is the top frame
+/// - When we calculate gradients, they are usually of the same shape for a given
+///   variable... we should store a fingerprint (a graphed-hash)...
+pub struct Tape<T, F: PullbackFamily<T>> {
+  inner: TapeInner<T, F::Operand>,
 }
 
-impl<T: TensorOps> Tape<T> {
-  pub fn new() -> Self
-  where
-    T: Default,
-  {
-    Self::default()
+impl<T, F> Tape<T, F>
+where
+  F: PullbackFamily<T>,
+{
+  pub fn new() -> Self {
+    Self {
+      inner: TapeInner::default(),
+    }
   }
 
-  pub fn scope<F, R>(&mut self, f: F) -> R
+  pub fn scope<G, R>(&mut self, f: G) -> R
   where
-    F: for<'inner> FnOnce(Guard<'inner, T, Unlocked>) -> R,
+    G: for<'inner> FnOnce(Guard<'inner, T, F::Operand, Unlocked>) -> R,
   {
-    self.inner.with_scope(0, f)
+    self.inner.with_scope(1, f)
   }
 }
 
+impl<T, F> Default for Tape<T, F>
+where
+  F: PullbackFamily<T>,
+{
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+/// Phantom type for a locked guard; a locked guard cannot create variables
+/// in that it is not allowed to modify it's scope
 pub struct Locked;
+
+/// Phantom type for an unlocked guard, something we CAN create variables on...
 pub struct Unlocked;
 
-pub struct Guard<'scope, T: TensorOps = f64, S = Unlocked> {
+/// An unlocked `Guard` provides an API to construct variables in a specific scope,
+/// once a guard is locked it can create subscopes or produce gradients for the
+/// variables constructed while unlocked...
+pub struct Guard<'scope, T, U, S = Unlocked> {
   level: u8,
-  tape: *const TapeInner<T>,
+  /// Pointer is guaranteed to outlast 'scope...
+  tape: *const TapeInner<T, U>,
   phantom: PhantomData<&'scope S>,
 }
 
-impl<'scope, T: TensorOps> Guard<'scope, T, Unlocked> {
+impl<'scope, T, U> Guard<'scope, T, U, Unlocked> {
+  /// Construct a new variable of a specific value; the created variable cannot
+  /// migrate out of the enclosing scope, but it can propagate mutations made in
+  /// lower scopes...
   #[inline]
-  pub fn var(&self, value: T) -> Var<'scope, T> {
-    let tape = unsafe { &*self.tape };
-    let mut current_frame = tape.current_frame_mut();
+  pub fn var<F>(&self, value: T) -> Var<'scope, T, F>
+  where
+    F: PullbackFamily<T, Operand = U>,
+  {
+    let tape = self.tape;
+    let level = self.level;
 
-    let index = NodeIndex::new(self.level, current_frame.nodes.len() as u64);
-    let identity = Rc::new(|upstream: &T| upstream.zeros_like());
-    let index = current_frame.add_node(
-      Predecessor {
-        index,
-        grad_fn: identity.clone(),
-      },
-      Predecessor {
-        index,
-        grad_fn: identity,
-      },
-    );
+    // safety: guards are always created under a tape...
+    let index = unsafe { &*tape }.map_current_frame_mut(|frame| {
+      let self_idx = NodeIndex::new(level, frame.nodes.len() as u64);
+      // leaves: both predecessors point to self with identity...
+      // the loop check in Gradients::of ensures we only apply pred_a (identity)
+      frame.add_node(
+        self_idx,
+        OpId::Identity,
+        self_idx,
+        OpId::Identity, // never called due to loop check
+        SmallVec::new(),
+      )
+    });
 
-    Var { value, index, tape }
+    Var {
+      value,
+      inner: VarInner {
+        index,
+        tape: tape as *const _,
+      },
+      _phantom: PhantomData,
+    }
   }
 
+  /// Lock a guard...
+  ///
+  /// Consume an unlocked guard and produce a locked guard with same lifetimes
   #[inline]
-  pub fn lock(self) -> Guard<'scope, T, Locked> {
+  pub fn lock(self) -> Guard<'scope, T, U, Locked> {
     Guard {
       level: self.level,
       tape: self.tape,
@@ -1040,19 +456,27 @@ impl<'scope, T: TensorOps> Guard<'scope, T, Unlocked> {
   }
 }
 
-impl<'scope, T: TensorOps> Guard<'scope, T, Locked> {
+impl<'scope, T, U> Guard<'scope, T, U, Locked> {
+  /// A locked guard can spawn additional scopes for computation
+  ///
+  /// Subscopes will themselves provide a new guard for their own scopes...
   #[inline]
-  pub fn scope<F, R>(&mut self, f: F) -> R
+  pub fn scope<G, R>(&mut self, f: G) -> R
   where
-    F: for<'inner> FnOnce(Guard<'inner, T, Unlocked>) -> R,
+    G: for<'inner> FnOnce(Guard<'inner, T, U, Unlocked>) -> R,
   {
-    let tape: &TapeInner<T> = unsafe { &*self.tape };
+    let tape: &TapeInner<T, U> = unsafe { &*self.tape };
     assert!(self.level < u8::MAX);
     tape.with_scope(self.level + 1, f)
   }
 
+  /// A locked guard can collapse into gradients for the variables that were
+  /// created on it while unlocked...
   #[inline]
-  pub fn collapse(self) -> Gradients<'scope, T> {
+  pub fn collapse<F>(self) -> Gradients<'scope, T, F>
+  where
+    F: PullbackFamily<T, Operand = U>,
+  {
     Gradients {
       tape: self.tape,
       phantom: PhantomData,
@@ -1060,10 +484,13 @@ impl<'scope, T: TensorOps> Guard<'scope, T, Locked> {
   }
 }
 
+/// We know how big of a hashmap we want to store our deltas in, but we cant
+/// create a map with a given capacity since we need to supply the hasher too...
 trait HashMapExt {
   fn with_capacity(x: usize) -> Self;
 }
 
+/// Just specialize with_capacity for those maps who have a default hasher...
 impl<K, V, S> HashMapExt for HashMap<K, V, S>
 where
   K: Hash + Eq,
@@ -1074,6 +501,7 @@ where
   }
 }
 
+/// Unfortunately we need to duplicate the above to work for hashsets too...
 trait HashSetExt {
   fn with_capacity(x: usize) -> Self;
 }
@@ -1088,38 +516,77 @@ where
   }
 }
 
-type IndexNode<T> = (NodeIndex, Node<T>);
-
-pub struct Gradients<'scope, T: TensorOps = f64> {
-  tape: *const TapeInner<T>,
-  phantom: PhantomData<&'scope ()>,
+/// Possible derivatives for a specified scope...
+pub struct Gradients<'scope, T, F: PullbackFamily<T>> {
+  /// Pointer is guaranteed to outlast 'scope...
+  tape: *const TapeInner<T, F::Operand>,
+  phantom: PhantomData<&'scope F>,
 }
 
-impl<'scope, T: TensorOps> Gradients<'scope, T> {
-  pub fn of(&self, var: &Var<'scope, T>) -> Deltas<'scope, T> {
+impl<'scope, T, F> Gradients<'scope, T, F>
+where
+  T: ClosedAddAssign + Clone,
+  F: PullbackFamily<T>,
+{
+  /// Get the deltas of some variable in some scope
+  ///
+  /// This function is the hottest part of the program, occupying on average ~65%
+  /// of the run time...
+  ///
+  /// Note: we require a seed gradient to start the computation. For scalar types,
+  /// this is typically 1.0. For shaped types (matrices, tensors), this must match
+  /// the shape of the output variable...
+  pub fn of(&self, var: &Var<'scope, T, F>, seed: T) -> Deltas<'scope, T> {
+    // safety: we are under the tapes 'scope, so tape is valid...
     let tape = unsafe { &*self.tape };
     let subgraph = topological_subgraph(tape, var);
-
     let mut deltas = FxHashMap::with_capacity(subgraph.len());
-    deltas.insert(var.index, var.value.ones_like());
+    // seed dv/dv with provided gradient (e.g., 1.0 for scalars, ones(shape) for matrices)
+    deltas.insert(var.inner.index, seed);
 
     for (index, node) in subgraph.into_iter().rev() {
-      let Node { pred_a, pred_b, .. } = node;
+      let Node {
+        pred_a,
+        pred_b,
+        captures,
+      } = node;
 
-      let upstream = deltas.get(&index).unwrap();
+      // read phase, get upstream gradient, skip if n/a
+      let upstream = match deltas.get(&index) {
+        Some(v) => v,
+        None => continue,
+      };
 
-      let grad_a = (pred_a.grad_fn)(upstream);
-      let grad_b = (pred_b.grad_fn)(upstream);
+      // compute phase, calculate gradients without borrowing...
+      let mut grads: SmallVec<[(NodeIndex, T); 2]> = SmallVec::new();
 
-      deltas
-        .entry(pred_a.index)
-        .and_modify(|e| *e = e.add(&grad_a))
-        .or_insert(grad_a);
+      // a-branch pullback, skipping self-loops
+      if pred_a.node != index {
+        let grad_a = match pred_a.op_id {
+          OpId::Identity => upstream.clone(),
+          OpId::User(ref op) => F::apply_a(op.clone(), &captures, upstream),
+        };
+        grads.push((pred_a.node, grad_a));
+      }
 
-      deltas
-        .entry(pred_b.index)
-        .and_modify(|e| *e = e.add(&grad_b))
-        .or_insert(grad_b);
+      // b-branch pullback, skipping self-loops
+      if pred_b.node != index {
+        let grad_b = match pred_b.op_id {
+          OpId::Identity => upstream.clone(),
+          OpId::User(ref op) => F::apply_b(op.clone(), &captures, upstream),
+        };
+        grads.push((pred_b.node, grad_b));
+      }
+
+      // write phase, emit updated deltas...
+      for (node_idx, grad) in grads {
+        deltas
+          .entry(node_idx)
+          .and_modify(|g| {
+            *g += grad.clone();
+          })
+          .or_insert(grad);
+      }
     }
 
     Deltas {
@@ -1129,31 +596,43 @@ impl<'scope, T: TensorOps> Gradients<'scope, T> {
   }
 }
 
-fn topological_subgraph<T>(tape: &TapeInner<T>, var: &Var<'_, T>) -> Vec<IndexNode<T>>
+/// Topologically sort our graph moving backwards along predecessors of a given
+/// variable...
+fn topological_subgraph<T, U, F>(
+  tape: &TapeInner<T, U>,
+  var: &Var<'_, T, F>,
+) -> Vec<(NodeIndex, Node<T, U>)>
 where
-  T: TensorOps + Clone,
+  T: Clone,
+  U: Clone,
+  F: PullbackFamily<T, Operand = U>,
 {
-  let nodes = tape.frames.borrow();
+  let frames = tape.frames.borrow();
 
+  // preallocating a little bit of extra room provides ~20% speedup...
   let mut stack = Vec::with_capacity(512);
   let mut result = Vec::with_capacity(512);
   let mut visited = FxHashSet::with_capacity(512);
 
-  stack.push((var.index, false));
+  stack.push((var.inner.index, false));
 
+  // linear dfs for easier tracing... can always revert to prettier recursive...
   while let Some((node_index, children_processed)) = stack.pop() {
     if children_processed {
-      if let Some(node) = nodes.get_node(node_index) {
-        result.push((node_index, node.clone()));
+      // add to result in postorder
+      if let Some(node) = frames.get_node(node_index).cloned() {
+        result.push((node_index, node));
       }
     } else if visited.insert(node_index) {
+      // marker to add node after children
       stack.push((node_index, true));
-      if let Some(node) = nodes.get_node(node_index) {
-        if !visited.contains(&node.pred_b.index) {
-          stack.push((node.pred_b.index, false));
+      if let Some(node) = frames.get_node(node_index) {
+        // process pred_a before pred_b, order matters...
+        if !visited.contains(&node.pred_b.node) {
+          stack.push((node.pred_b.node, false));
         }
-        if !visited.contains(&node.pred_a.index) {
-          stack.push((node.pred_a.index, false));
+        if !visited.contains(&node.pred_a.node) {
+          stack.push((node.pred_a.node, false));
         }
       }
     }
@@ -1162,103 +641,25 @@ where
   result
 }
 
-#[derive(Debug)]
-pub struct Deltas<'scope, T: TensorOps = f64> {
+/// The deltas of some variable in a specified scope; deltas can be with respect
+/// to variables declared in outer scopes...
+pub struct Deltas<'scope, T> {
   deltas: FxHashMap<NodeIndex, T>,
   phantom: PhantomData<&'scope ()>,
 }
 
-impl<'scope, T: TensorOps> Index<&Var<'scope, T>> for Deltas<'scope, T> {
+impl<'scope, T, F: PullbackFamily<T>> Index<&Var<'scope, T, F>> for Deltas<'scope, T> {
   type Output = T;
 
-  fn index(&self, var: &Var<'scope, T>) -> &Self::Output {
-    static ZERO_F64: f64 = 0.0;
-    self.deltas.get(&var.index).unwrap_or(
-      if std::any::TypeId::of::<T>() == std::any::TypeId::of::<f64>() {
-        // Safety: We just checked that T is f64
-        unsafe { &*(&ZERO_F64 as *const f64 as *const T) }
-      } else {
-        panic!("No gradient found for variable")
-      },
-    )
+  fn index(&self, var: &Var<'scope, T, F>) -> &Self::Output {
+    self.deltas.get(&var.inner.index).unwrap()
   }
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  mod scalar_ops {
-    use super::*;
-
-    #[test]
-    fn test_add() {
-      let mut tape = Tape::new();
-      tape.scope(|guard| {
-        let a = guard.var(3.0);
-        let b = guard.var(4.0);
-        let c = &a + &b;
-        assert_eq!(*c.value(), 7.0);
-
-        let grads = guard.lock().collapse().of(&c);
-        assert_eq!(grads[&a], 1.0);
-        assert_eq!(grads[&b], 1.0);
-      });
-    }
-
-    #[test]
-    fn test_matmul_scalar() {
-      // For scalars, matmul is just multiplication
-      let mut tape = Tape::new();
-      tape.scope(|guard| {
-        let a = guard.var(3.0);
-        let b = guard.var(4.0);
-        let c = &a * &b; // This is now matmul
-        assert_eq!(*c.value(), 12.0);
-
-        let grads = guard.lock().collapse().of(&c);
-        assert_eq!(grads[&a], 4.0);
-        assert_eq!(grads[&b], 3.0);
-      });
-    }
-
-    #[test]
-    fn test_hadamard() {
-      // For scalars, hadamard is also multiplication
-      let mut tape = Tape::new();
-      tape.scope(|guard| {
-        let a = guard.var(3.0);
-        let b = guard.var(4.0);
-        let c = a.hadamard(&b);
-        assert_eq!(*c.value(), 12.0);
-
-        let grads = guard.lock().collapse().of(&c);
-        assert_eq!(grads[&a], 4.0);
-        assert_eq!(grads[&b], 3.0);
-      });
-    }
-
-    #[test]
-    fn test_complex_expression() {
-      let mut tape = Tape::new();
-      tape.scope(|guard| {
-        let x = guard.var(2.0);
-        let y = guard.var(3.0);
-
-        // z = x^2 * y + sin(x)
-        let z = x.powf(2.0).hadamard(&y) + x.sin();
-
-        let expected = 4.0 * 3.0 + 2.0_f64.sin();
-        assert!((z.value() - expected).abs() < 1e-10);
-
-        let grads = guard.lock().collapse().of(&z);
-        // dz/dx = 2xy + cos(x) = 2*2*3 + cos(2)
-        let expected_dx = 12.0 + 2.0_f64.cos();
-        assert!((grads[&x] - expected_dx).abs() < 1e-10);
-
-        // dz/dy = x^2 = 4
-        assert!((grads[&y] - 4.0).abs() < 1e-10);
-      });
-    }
+impl<T> fmt::Debug for Deltas<'_, T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.debug_struct("Deltas")
+      .field("count", &self.deltas.len())
+      .finish()
   }
 }

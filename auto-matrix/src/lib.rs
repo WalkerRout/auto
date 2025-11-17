@@ -9,7 +9,9 @@ use nalgebra::DMatrix;
 
 use smallvec::smallvec;
 
-use lib_auto_core::{self as core, OpId, Operation, Deltas, Gradients, PullbackFamily, PullbackSpec, Unlocked};
+use lib_auto_core::{
+  self as core, Deltas, Gradients, OpId, Operation, PullbackFamily, PullbackSpec, Unlocked,
+};
 
 // Public API type aliases matching auto-scalar pattern
 pub type Guard<'a, L = Unlocked> = core::Guard<'a, DMatrix<f64>, Pullback, L>;
@@ -132,10 +134,10 @@ impl PullbackFamily<DMatrix<f64>> for Pullback {
       MatrixOp::Transpose => DMatrix::zeros(0, 0),
       MatrixOp::MulScalar => DMatrix::zeros(0, 0),
       MatrixOp::DivScalar => DMatrix::zeros(0, 0),
-      MatrixOp::AddConst => DMatrix::zeros(0, 0),    // Const has no gradient
-      MatrixOp::SubConst => DMatrix::zeros(0, 0),    // Const has no gradient
-      MatrixOp::MulConst => DMatrix::zeros(0, 0),    // Const has no gradient
-      MatrixOp::DivConst => DMatrix::zeros(0, 0),    // Const has no gradient
+      MatrixOp::AddConst => DMatrix::zeros(0, 0), // Const has no gradient
+      MatrixOp::SubConst => DMatrix::zeros(0, 0), // Const has no gradient
+      MatrixOp::MulConst => DMatrix::zeros(0, 0), // Const has no gradient
+      MatrixOp::DivConst => DMatrix::zeros(0, 0), // Const has no gradient
       MatrixOp::MatMulConst => DMatrix::zeros(0, 0), // Const has no gradient
     }
   }
@@ -490,7 +492,10 @@ pub trait VarExt<'scope> {
 
   fn matmul_const(&self, other: &DMatrix<f64>) -> Self;
 
-  fn deltas<F>(&self, gradients: &Gradients<'scope, DMatrix<f64>, F>) -> Deltas<'scope, DMatrix<f64>>
+  fn deltas<F>(
+    &self,
+    gradients: &Gradients<'scope, DMatrix<f64>, F>,
+  ) -> Deltas<'scope, DMatrix<f64>>
   where
     F: PullbackFamily<DMatrix<f64>, Operand = MatrixOp>;
 }
@@ -568,7 +573,10 @@ impl<'scope> VarExt<'scope> for core::Var<'scope, DMatrix<f64>, MatrixOp> {
     self.binary_op(self, MatMulConstOp(other.clone()))
   }
 
-  fn deltas<F>(&self, gradients: &Gradients<'scope, DMatrix<f64>, F>) -> Deltas<'scope, DMatrix<f64>>
+  fn deltas<F>(
+    &self,
+    gradients: &Gradients<'scope, DMatrix<f64>, F>,
+  ) -> Deltas<'scope, DMatrix<f64>>
   where
     F: PullbackFamily<DMatrix<f64>, Operand = MatrixOp>,
   {

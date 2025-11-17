@@ -407,7 +407,7 @@ where
 
 impl<T, F> Default for Tape<T, F>
 where
-  F: PullbackFamily<T>
+  F: PullbackFamily<T>,
 {
   fn default() -> Self {
     Self::new()

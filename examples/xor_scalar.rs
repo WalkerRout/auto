@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use lib_auto::{Tape, Locked};
 use lib_auto::scalar::{Guard, Pullback, Var, VarExt};
+use lib_auto::{Locked, Tape};
 
 // a variable's scope cannot exceed its tape, so lets just use the same lifetime
 // for brevity...

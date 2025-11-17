@@ -3,8 +3,8 @@ use std::io::{BufWriter, Write};
 
 use nalgebra::{dmatrix, DMatrix};
 
-use lib_auto::{Tape, Locked};
 use lib_auto::matrix::{Guard, Pullback, Var, VarExt};
+use lib_auto::{Locked, Tape};
 
 // a variable's scope cannot exceed its tape, so lets just use the same lifetime
 // for brevity...
@@ -49,7 +49,7 @@ impl<'a> XorNet<'a> {
   }
 
   #[inline]
-  fn forward(&self, x: DMatrix<f64>) -> Var<'a> {  
+  fn forward(&self, x: DMatrix<f64>) -> Var<'a> {
     let z1 = self.w1.t().matmul_const(&x).add(&self.b1);
     let a1 = sigmoid(&z1);
     let z_out = self.w2.t().matmul(&a1).add(&self.b2);

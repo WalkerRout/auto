@@ -136,7 +136,7 @@ struct VarInner<T, U> {
 pub struct Var<'scope, T, U> {
   value: T,
   inner: VarInner<T, U>,
-  _phantom: PhantomData<&'scope ()>,
+  phantom: PhantomData<&'scope ()>,
 }
 
 impl<T, U> Var<'_, T, U> {
@@ -190,7 +190,7 @@ impl<T, U> Var<'_, T, U> {
         index,
         tape: self.inner.tape,
       },
-      _phantom: PhantomData,
+      phantom: PhantomData,
     }
   }
 }
@@ -299,14 +299,14 @@ impl<T, U> Default for Frames<T, U> {
 
 struct FrameGuard<'tape, T, U> {
   tape: *const TapeInner<T, U>,
-  _phantom: PhantomData<&'tape ()>,
+  phantom: PhantomData<&'tape ()>,
 }
 
 impl<'tape, T, U> FrameGuard<'tape, T, U> {
   fn new(tape: &'tape TapeInner<T, U>, frame: Frame<T, U>) -> Self {
     let guard = Self {
       tape: tape as *const TapeInner<T, U>,
-      _phantom: PhantomData,
+      phantom: PhantomData,
     };
     // safety: we just got a reference, it was valid on input...
     unsafe { &*guard.tape }.frames.borrow_mut().push(frame);
@@ -452,7 +452,7 @@ where
         index,
         tape: tape as *const _,
       },
-      _phantom: PhantomData,
+      phantom: PhantomData,
     }
   }
 

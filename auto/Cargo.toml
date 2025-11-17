@@ -20,10 +20,17 @@ lib-auto-core = { path = "../auto-core" }
 lib-auto-scalar = { path = "../auto-scalar", optional = true }
 lib-auto-matrix = { path = "../auto-matrix", optional = true }
 
+[dev-dependencies]
+nalgebra = "0.34.1"
+
 [[example]]
 name = "simple"
 path = "../examples/simple.rs"
 
 [[example]]
-name = "xor"
-path = "../examples/xor_network.rs"
+name = "xor_matrix"
+path = "../examples/xor_matrix.rs"
+
+[[example]]
+name = "xor_scalar"
+path = "../examples/xor_scalar.rs"

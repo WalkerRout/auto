@@ -9,10 +9,12 @@ use nalgebra::DMatrix;
 
 use smallvec::smallvec;
 
-use lib_auto_core::{Guard, OpId, Operation, PullbackFamily, PullbackSpec, Var};
+use lib_auto_core::{self as core, OpId, Operation, PullbackFamily, PullbackSpec, Unlocked};
 
-pub type MatGuard<'a, L = Unlocked> = Guard<'a, DMatrix<f64>, MatrixPullback, L>;
-pub type MatVar<'a> = Var<'a, DMatrix<f64>, <MatrixPullback as PullbackFamily<DMatrix<f64>>>::Operand>;
+// Public API type aliases matching auto-scalar pattern
+pub type Guard<'a, L = Unlocked> = core::Guard<'a, DMatrix<f64>, Pullback, L>;
+
+pub type Var<'a> = core::Var<'a, DMatrix<f64>, MatrixOp>;
 
 /// Matrix operation types for automatic differentiation
 #[derive(Debug, Clone, PartialEq)]
@@ -22,12 +24,19 @@ pub enum MatrixOp {
   MatMul,
   Hadamard,
   Div,
+  Neg,
+  Exp,
+  Ln,
+  Reciprocal,
+  Transpose,
+  MulScalar,
+  DivScalar,
 }
 
 /// Pullback family for matrix operations
-pub struct MatrixPullback;
+pub struct Pullback;
 
-impl PullbackFamily<DMatrix<f64>> for MatrixPullback {
+impl PullbackFamily<DMatrix<f64>> for Pullback {
   type Operand = MatrixOp;
 
   fn apply_a(
@@ -44,6 +53,29 @@ impl PullbackFamily<DMatrix<f64>> for MatrixPullback {
       }
       MatrixOp::Hadamard => upstream.component_mul(&captures[1]),
       MatrixOp::Div => upstream.component_div(&captures[1]),
+      MatrixOp::Neg => -upstream,
+      MatrixOp::Exp => {
+        let a = &captures[0];
+        a.map(|x| x.exp()).component_mul(upstream)
+      }
+      MatrixOp::Ln => {
+        let a = &captures[0];
+        upstream.component_div(a)
+      }
+      MatrixOp::Reciprocal => {
+        let a = &captures[0];
+        let a_sq = a.component_mul(a);
+        -upstream.component_div(&a_sq)
+      }
+      MatrixOp::Transpose => upstream.transpose(),
+      MatrixOp::MulScalar => {
+        let scalar = captures[0][(0, 0)];
+        upstream * scalar
+      }
+      MatrixOp::DivScalar => {
+        let scalar = captures[0][(0, 0)];
+        upstream / scalar
+      }
     }
   }
 
@@ -66,13 +98,20 @@ impl PullbackFamily<DMatrix<f64>> for MatrixPullback {
         let b_sq = b.component_mul(b);
         -a.component_div(&b_sq).component_mul(upstream)
       }
+      MatrixOp::Neg => DMatrix::zeros(0, 0),
+      MatrixOp::Exp => DMatrix::zeros(0, 0),
+      MatrixOp::Ln => DMatrix::zeros(0, 0),
+      MatrixOp::Reciprocal => DMatrix::zeros(0, 0),
+      MatrixOp::Transpose => DMatrix::zeros(0, 0),
+      MatrixOp::MulScalar => DMatrix::zeros(0, 0),
+      MatrixOp::DivScalar => DMatrix::zeros(0, 0),
     }
   }
 }
 
 pub struct AddOp;
 
-impl Operation<DMatrix<f64>, MatrixPullback> for AddOp {
+impl Operation<DMatrix<f64>, Pullback> for AddOp {
   fn forward(&self, a: &DMatrix<f64>, b: &DMatrix<f64>) -> DMatrix<f64> {
     a + b
   }
@@ -81,7 +120,7 @@ impl Operation<DMatrix<f64>, MatrixPullback> for AddOp {
     &self,
     a: &DMatrix<f64>,
     b: &DMatrix<f64>,
-  ) -> PullbackSpec<DMatrix<f64>, MatrixPullback> {
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
     PullbackSpec {
       op_id_a: OpId::User(MatrixOp::Add),
       op_id_b: OpId::User(MatrixOp::Add),
@@ -92,7 +131,7 @@ impl Operation<DMatrix<f64>, MatrixPullback> for AddOp {
 
 pub struct SubOp;
 
-impl Operation<DMatrix<f64>, MatrixPullback> for SubOp {
+impl Operation<DMatrix<f64>, Pullback> for SubOp {
   fn forward(&self, a: &DMatrix<f64>, b: &DMatrix<f64>) -> DMatrix<f64> {
     a - b
   }
@@ -101,7 +140,7 @@ impl Operation<DMatrix<f64>, MatrixPullback> for SubOp {
     &self,
     a: &DMatrix<f64>,
     b: &DMatrix<f64>,
-  ) -> PullbackSpec<DMatrix<f64>, MatrixPullback> {
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
     PullbackSpec {
       op_id_a: OpId::User(MatrixOp::Sub),
       op_id_b: OpId::User(MatrixOp::Sub),
@@ -112,7 +151,7 @@ impl Operation<DMatrix<f64>, MatrixPullback> for SubOp {
 
 pub struct MatMulOp;
 
-impl Operation<DMatrix<f64>, MatrixPullback> for MatMulOp {
+impl Operation<DMatrix<f64>, Pullback> for MatMulOp {
   fn forward(&self, a: &DMatrix<f64>, b: &DMatrix<f64>) -> DMatrix<f64> {
     a * b
   }
@@ -121,7 +160,7 @@ impl Operation<DMatrix<f64>, MatrixPullback> for MatMulOp {
     &self,
     a: &DMatrix<f64>,
     b: &DMatrix<f64>,
-  ) -> PullbackSpec<DMatrix<f64>, MatrixPullback> {
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
     PullbackSpec {
       op_id_a: OpId::User(MatrixOp::MatMul),
       op_id_b: OpId::User(MatrixOp::MatMul),
@@ -132,7 +171,7 @@ impl Operation<DMatrix<f64>, MatrixPullback> for MatMulOp {
 
 pub struct HadamardOp;
 
-impl Operation<DMatrix<f64>, MatrixPullback> for HadamardOp {
+impl Operation<DMatrix<f64>, Pullback> for HadamardOp {
   fn forward(&self, a: &DMatrix<f64>, b: &DMatrix<f64>) -> DMatrix<f64> {
     a.component_mul(b)
   }
@@ -141,7 +180,7 @@ impl Operation<DMatrix<f64>, MatrixPullback> for HadamardOp {
     &self,
     a: &DMatrix<f64>,
     b: &DMatrix<f64>,
-  ) -> PullbackSpec<DMatrix<f64>, MatrixPullback> {
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
     PullbackSpec {
       op_id_a: OpId::User(MatrixOp::Hadamard),
       op_id_b: OpId::User(MatrixOp::Hadamard),
@@ -152,7 +191,7 @@ impl Operation<DMatrix<f64>, MatrixPullback> for HadamardOp {
 
 pub struct DivOp;
 
-impl Operation<DMatrix<f64>, MatrixPullback> for DivOp {
+impl Operation<DMatrix<f64>, Pullback> for DivOp {
   fn forward(&self, a: &DMatrix<f64>, b: &DMatrix<f64>) -> DMatrix<f64> {
     a.component_div(b)
   }
@@ -161,7 +200,7 @@ impl Operation<DMatrix<f64>, MatrixPullback> for DivOp {
     &self,
     a: &DMatrix<f64>,
     b: &DMatrix<f64>,
-  ) -> PullbackSpec<DMatrix<f64>, MatrixPullback> {
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
     PullbackSpec {
       op_id_a: OpId::User(MatrixOp::Div),
       op_id_b: OpId::User(MatrixOp::Div),
@@ -170,8 +209,119 @@ impl Operation<DMatrix<f64>, MatrixPullback> for DivOp {
   }
 }
 
+// Unary operations - we create a dummy second input that points to self
+macro_rules! unary_op {
+  ($name:ident, $variant:ident, $forward:expr, $capture:expr) => {
+    pub struct $name;
+
+    impl Operation<DMatrix<f64>, Pullback> for $name {
+      fn forward(&self, a: &DMatrix<f64>, _b: &DMatrix<f64>) -> DMatrix<f64> {
+        $forward(a)
+      }
+
+      fn pullback_spec(
+        &self,
+        a: &DMatrix<f64>,
+        _b: &DMatrix<f64>,
+      ) -> PullbackSpec<DMatrix<f64>, Pullback> {
+        PullbackSpec {
+          op_id_a: OpId::User(MatrixOp::$variant),
+          op_id_b: OpId::Ignore,
+          captures: $capture(a),
+        }
+      }
+    }
+  };
+}
+
+unary_op!(NegOp, Neg, |a: &DMatrix<f64>| -a, |_a: &DMatrix<f64>| {
+  smallvec![]
+});
+unary_op!(
+  ExpOp,
+  Exp,
+  |a: &DMatrix<f64>| a.map(|x| x.exp()),
+  |a: &DMatrix<f64>| smallvec![a.clone()]
+);
+unary_op!(
+  LnOp,
+  Ln,
+  |a: &DMatrix<f64>| a.map(|x| x.ln()),
+  |a: &DMatrix<f64>| smallvec![a.clone()]
+);
+unary_op!(
+  ReciprocalOp,
+  Reciprocal,
+  |a: &DMatrix<f64>| a.map(|x| 1.0 / x),
+  |a: &DMatrix<f64>| smallvec![a.clone()]
+);
+unary_op!(
+  TransposeOp,
+  Transpose,
+  |a: &DMatrix<f64>| a.transpose(),
+  |_a: &DMatrix<f64>| smallvec![]
+);
+
+pub struct AddF64Op(pub f64);
+pub struct MulF64Op(pub f64);
+pub struct DivF64Op(pub f64);
+
+impl Operation<DMatrix<f64>, Pullback> for AddF64Op {
+  fn forward(&self, a: &DMatrix<f64>, _b: &DMatrix<f64>) -> DMatrix<f64> {
+    a.map(|x| x + self.0)
+  }
+
+  fn pullback_spec(
+    &self,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
+    PullbackSpec {
+      op_id_a: OpId::Identity,
+      op_id_b: OpId::Ignore,
+      captures: smallvec![],
+    }
+  }
+}
+
+impl Operation<DMatrix<f64>, Pullback> for MulF64Op {
+  fn forward(&self, a: &DMatrix<f64>, _b: &DMatrix<f64>) -> DMatrix<f64> {
+    a * self.0
+  }
+
+  fn pullback_spec(
+    &self,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
+    PullbackSpec {
+      op_id_a: OpId::User(MatrixOp::MulScalar),
+      op_id_b: OpId::Ignore,
+      captures: smallvec![DMatrix::from_element(1, 1, self.0)],
+    }
+  }
+}
+
+impl Operation<DMatrix<f64>, Pullback> for DivF64Op {
+  fn forward(&self, a: &DMatrix<f64>, _b: &DMatrix<f64>) -> DMatrix<f64> {
+    a / self.0
+  }
+
+  fn pullback_spec(
+    &self,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
+    PullbackSpec {
+      op_id_a: OpId::User(MatrixOp::DivScalar),
+      op_id_b: OpId::Ignore,
+      captures: smallvec![DMatrix::from_element(1, 1, self.0)],
+    }
+  }
+}
+
 /// Extension trait providing matrix operations on Var<DMatrix<f64>>
-pub trait VarMatrixExt<'scope> {
+pub trait VarExt<'scope> {
   /// Element-wise addition
   fn add(&self, other: &Self) -> Self;
   /// Element-wise subtraction
@@ -182,9 +332,25 @@ pub trait VarMatrixExt<'scope> {
   fn hadamard(&self, other: &Self) -> Self;
   /// Element-wise division
   fn div(&self, other: &Self) -> Self;
+  /// Element-wise negation
+  fn neg(&self) -> Self;
+  /// Element-wise exponential
+  fn exp(&self) -> Self;
+  /// Element-wise natural logarithm
+  fn ln(&self) -> Self;
+  /// Element-wise reciprocal (1/x)
+  fn reciprocal(&self) -> Self;
+  /// Transpose
+  fn t(&self) -> Self;
+  /// Add scalar to all elements
+  fn add_f64(&self, other: f64) -> Self;
+  /// Multiply all elements by scalar
+  fn mul_f64(&self, other: f64) -> Self;
+  /// Divide all elements by scalar
+  fn div_f64(&self, other: f64) -> Self;
 }
 
-impl<'scope> VarMatrixExt<'scope> for Var<'scope, DMatrix<f64>, MatrixOp> {
+impl<'scope> VarExt<'scope> for core::Var<'scope, DMatrix<f64>, MatrixOp> {
   fn add(&self, other: &Self) -> Self {
     self.binary_op(other, AddOp)
   }
@@ -204,6 +370,38 @@ impl<'scope> VarMatrixExt<'scope> for Var<'scope, DMatrix<f64>, MatrixOp> {
   fn div(&self, other: &Self) -> Self {
     self.binary_op(other, DivOp)
   }
+
+  fn neg(&self) -> Self {
+    self.binary_op(self, NegOp)
+  }
+
+  fn exp(&self) -> Self {
+    self.binary_op(self, ExpOp)
+  }
+
+  fn ln(&self) -> Self {
+    self.binary_op(self, LnOp)
+  }
+
+  fn reciprocal(&self) -> Self {
+    self.binary_op(self, ReciprocalOp)
+  }
+
+  fn t(&self) -> Self {
+    self.binary_op(self, TransposeOp)
+  }
+
+  fn add_f64(&self, other: f64) -> Self {
+    self.binary_op(self, AddF64Op(other))
+  }
+
+  fn mul_f64(&self, other: f64) -> Self {
+    self.binary_op(self, MulF64Op(other))
+  }
+
+  fn div_f64(&self, other: f64) -> Self {
+    self.binary_op(self, DivF64Op(other))
+  }
 }
 
 #[cfg(test)]
@@ -214,7 +412,7 @@ mod tests {
 
   #[test]
   fn test_add() {
-    let mut tape: Tape<DMatrix<f64>, MatrixPullback> = Tape::new();
+    let mut tape: Tape<DMatrix<f64>, Pullback> = Tape::new();
     tape.scope(|guard| {
       let a = guard.var(dmatrix![1.0, 2.0; 3.0, 4.0]);
       let b = guard.var(dmatrix![5.0, 6.0; 7.0, 8.0]);
@@ -232,7 +430,7 @@ mod tests {
 
   #[test]
   fn test_sub() {
-    let mut tape: Tape<DMatrix<f64>, MatrixPullback> = Tape::new();
+    let mut tape: Tape<DMatrix<f64>, Pullback> = Tape::new();
     tape.scope(|guard| {
       let a = guard.var(dmatrix![5.0, 6.0; 7.0, 8.0]);
       let b = guard.var(dmatrix![1.0, 2.0; 3.0, 4.0]);
@@ -250,7 +448,7 @@ mod tests {
 
   #[test]
   fn test_matmul() {
-    let mut tape: Tape<DMatrix<f64>, MatrixPullback> = Tape::new();
+    let mut tape: Tape<DMatrix<f64>, Pullback> = Tape::new();
     tape.scope(|guard| {
       let a = guard.var(dmatrix![1.0, 2.0; 3.0, 4.0]);
       let b = guard.var(dmatrix![5.0, 6.0; 7.0, 8.0]);
@@ -273,7 +471,7 @@ mod tests {
 
   #[test]
   fn test_hadamard() {
-    let mut tape: Tape<DMatrix<f64>, MatrixPullback> = Tape::new();
+    let mut tape: Tape<DMatrix<f64>, Pullback> = Tape::new();
     tape.scope(|guard| {
       let a = guard.var(dmatrix![1.0, 2.0; 3.0, 4.0]);
       let b = guard.var(dmatrix![5.0, 6.0; 7.0, 8.0]);
@@ -291,7 +489,7 @@ mod tests {
 
   #[test]
   fn test_div() {
-    let mut tape: Tape<DMatrix<f64>, MatrixPullback> = Tape::new();
+    let mut tape: Tape<DMatrix<f64>, Pullback> = Tape::new();
     tape.scope(|guard| {
       let a = guard.var(dmatrix![6.0, 8.0; 10.0, 12.0]);
       let b = guard.var(dmatrix![2.0, 4.0; 5.0, 6.0]);
@@ -314,7 +512,7 @@ mod tests {
 
   #[test]
   fn test_composite() {
-    let mut tape: Tape<DMatrix<f64>, MatrixPullback> = Tape::new();
+    let mut tape: Tape<DMatrix<f64>, Pullback> = Tape::new();
     tape.scope(|guard| {
       let a = guard.var(dmatrix![1.0, 2.0; 3.0, 4.0]);
       let b = guard.var(dmatrix![2.0, 0.0; 1.0, 2.0]);

@@ -18,6 +18,7 @@ dependencies = [
  "lib-auto-core",
  "lib-auto-matrix",
  "lib-auto-scalar",
+ "nalgebra",
 ]
 
 [[package]]

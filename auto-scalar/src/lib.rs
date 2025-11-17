@@ -6,8 +6,8 @@
 
 use smallvec::SmallVec;
 
-use lib_auto_core::{self as core,
-  Deltas, Gradients, OpId, Operation, PullbackFamily, PullbackSpec, Unlocked,
+use lib_auto_core::{
+  self as core, Deltas, Gradients, OpId, Operation, PullbackFamily, PullbackSpec, Unlocked,
 };
 
 pub type Guard<'a, L = Unlocked> = core::Guard<'a, f64, Pullback, L>;

@@ -1,20 +1,10 @@
-[package]
-name = "auto"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-ndarray = "0.16.1"
-noether = "0.3.0"
-rustc-hash = "2.1.1"
-smallvec = "1.15.1"
+[workspace]
+resolver = "3"
+members = ["auto", "auto-core", "auto-matrix", "auto-scalar"]
 
 [profile.release]
-#lto = true
+lto = true
 panic = "abort"
-#strip = "symbols"
-#opt-level = 3
-#codegen-units = 1
-debug = 2
-strip = false
-lto = false
+strip = "symbols"
+opt-level = 3
+codegen-units = 1

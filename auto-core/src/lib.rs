@@ -1,10 +1,19 @@
-//! # auto-core: Reverse-Mode Automatic Differentiation Core
 //!
-//! This crate provides the core computational graph machinery with ZERO assumptions
-//! about the type T being differentiated. All operations are defined externally via
-//! the `PullbackFamily` and `Operation` traits.
+//! # auto-core
 //!
-//! Separate crates (auto-scalar, auto-ndarray, etc.) provide concrete implementations.
+//! ## Safety Invariants
+//!
+//! The unsafe code in this library maintains these invariants:
+//!
+//! 1. The tape remains valid for the entire duration of any scope created from it
+//! 2. Raw pointers are only dereferenced under the scope where they were created
+//! 3. The computational graph structure is immutable once gradient computation begins
+//!
+//! These invariants are enforced by:
+//! - Taking a mutable borrow of the tape at scope creation
+//! - Typestate-based guards to manage variable lifetimes
+//! - Frame guards that automatically clean up computational state
+//!
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -25,6 +34,8 @@ use smallvec::SmallVec;
 /// The core handles identity (grad passthrough) by default
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OpId<U> {
+  /// Ignore pullback, ignore gradient...
+  Ignore,
   /// Identity pullback, passes gradient through unchanged
   Identity,
   /// User-defined operation, used in tandem with PullbackFamily<T>::Operand
@@ -75,17 +86,18 @@ pub struct PullbackSpec<T, F: PullbackFamily<T>> {
   pub captures: SmallVec<[T; 2]>,
 }
 
+/*
 /// Extension trait for computing gradients of a variable
 ///
-/// This trait is implemented by type-specific crates to provide the appropriate 
-/// "unit gradient" (seed) for differentiation
-pub trait Gradient<'scope, T, F>
-where
-  F: PullbackFamily<T>,
-{
+/// This trait is implemented by type-specific crates to provide the appropriate
+/// seed/unit gradient for differentiation
+pub trait Gradient<'scope, T, U> {
   /// Compute the deltas/gradient set for self
-  fn grad(&self, gradients: &Gradients<'scope, T, F>) -> Deltas<'scope, T>;
+  fn grads<F>(&self, gradients: &Gradients<'scope, T, F>) -> Deltas<'scope, T>
+  where
+    F: PullbackFamily<T, Operand = U>;
 }
+*/
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 struct NodeIndex(u64);
@@ -129,20 +141,23 @@ struct VarInner<T, U> {
 /// A variable in the computational graph.
 ///
 /// Variables are created via `Guard::var()`
-pub struct Var<'scope, T, F: PullbackFamily<T>> {
+pub struct Var<'scope, T, U> {
   value: T,
-  inner: VarInner<T, F::Operand>,
-  _phantom: PhantomData<&'scope F>,
+  inner: VarInner<T, U>,
+  _phantom: PhantomData<&'scope ()>,
 }
 
-impl<T, F> Var<'_, T, F>
-where
-  F: PullbackFamily<T>,
-{
-  /// Get the value stored in this variable
+impl<T, U> Var<'_, T, U> {
+  /// Get a reference to the value stored in this variable
   #[inline(always)]
   pub fn value(&self) -> &T {
     &self.value
+  }
+
+  /// Get a mutable reference to the value stored in this variable
+  #[inline(always)]
+  pub fn value_mut(&mut self) -> &mut T {
+    &mut self.value
   }
 
   /// Core primitive for constructing new variables from binary operations.
@@ -153,7 +168,7 @@ where
   /// # Example
   ///
   /// ```ignore
-  /// impl<'scope, F> Var<'scope, f64, F>
+  /// impl<'scope, F> Var<'scope, f64, F::Operand>
   /// where
   ///   F: PullbackFamily<f64>,
   /// {
@@ -163,7 +178,11 @@ where
   /// }
   /// ```
   #[inline]
-  pub fn binary_op(&self, other: &Self, op: impl Operation<T, F>) -> Self {
+  pub fn binary_op<O, F>(&self, other: &Self, op: O) -> Self
+  where
+    O: Operation<T, F>,
+    F: PullbackFamily<T, Operand = U>,
+  {
     let value = op.forward(&self.value, &other.value);
     let spec = op.pullback_spec(&self.value, &other.value);
 
@@ -190,7 +209,7 @@ where
   }
 }
 
-impl<T: fmt::Debug, F: PullbackFamily<T>> fmt::Debug for Var<'_, T, F> {
+impl<T: fmt::Debug, U> fmt::Debug for Var<'_, T, U> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("Var")
       .field("value", &self.value)
@@ -234,7 +253,6 @@ impl<T, U> Frame<T, U> {
       },
       captures,
     });
-
     NodeIndex::new(self.level, node_idx as u64)
   }
 }
@@ -253,26 +271,20 @@ struct Frames<T, U> {
   rest: Vec<Frame<T, U>>,
 }
 
-impl<T, U> Default for Frames<T, U> {
-  fn default() -> Self {
-    Self {
-      current: Frame::default(),
-      rest: Vec::new(),
-    }
-  }
-}
-
 impl<T, U> Frames<T, U> {
   #[inline]
   fn get_node(&self, index: NodeIndex) -> Option<&Node<T, U>> {
-      // to get a node, we need to know which frame it is on (its level) along with
+    // to get a node, we need to know which frame it is on (its level) along with
     // its index in that level...
     let level = index.level() as usize;
     let index = index.index() as usize;
     if level == self.current.level as usize {
       self.current.nodes.get(index)
     } else {
-      self.rest.get(level).and_then(|frame| frame.nodes.get(index))
+      self
+        .rest
+        .get(level)
+        .and_then(|frame| frame.nodes.get(index))
     }
   }
 
@@ -290,6 +302,15 @@ impl<T, U> Frames<T, U> {
   }
 }
 
+impl<T, U> Default for Frames<T, U> {
+  fn default() -> Self {
+    Self {
+      current: Frame::default(),
+      rest: Vec::new(),
+    }
+  }
+}
+
 struct FrameGuard<'tape, T, U> {
   tape: *const TapeInner<T, U>,
   _phantom: PhantomData<&'tape ()>,
@@ -297,12 +318,11 @@ struct FrameGuard<'tape, T, U> {
 
 impl<'tape, T, U> FrameGuard<'tape, T, U> {
   fn new(tape: &'tape TapeInner<T, U>, frame: Frame<T, U>) -> Self {
-    let tape_ptr = tape as *const TapeInner<T, U>;
     let guard = Self {
-      tape: tape_ptr,
+      tape: tape as *const TapeInner<T, U>,
       _phantom: PhantomData,
     };
-    // safety: tape is bound by 'tape, we guarantee that tape outlives the guard
+    // safety: we just got a reference, it was valid on input...
     unsafe { &*guard.tape }.frames.borrow_mut().push(frame);
     guard
   }
@@ -319,14 +339,6 @@ struct TapeInner<T, U> {
   frames: RefCell<Frames<T, U>>,
 }
 
-impl<T, U> Default for TapeInner<T, U> {
-  fn default() -> Self {
-    Self {
-      frames: RefCell::new(Frames::default()),
-    }
-  }
-}
-
 impl<T, U> TapeInner<T, U> {
   #[inline]
   fn map_current_frame_mut<R, G>(&self, f: G) -> R
@@ -337,9 +349,10 @@ impl<T, U> TapeInner<T, U> {
     f(&mut frames.current)
   }
 
-  fn with_scope<G, R>(&self, level: u8, f: G) -> R
+  fn with_scope<G, R, F>(&self, level: u8, f: G) -> R
   where
-    G: for<'inner> FnOnce(Guard<'inner, T, U, Unlocked>) -> R,
+    F: PullbackFamily<T, Operand = U>,
+    G: for<'inner> FnOnce(Guard<'inner, T, F, Unlocked>) -> R,
   {
     let _tape_frame = FrameGuard::new(self, Frame::new(level));
     f(Guard {
@@ -347,6 +360,14 @@ impl<T, U> TapeInner<T, U> {
       tape: self as *const TapeInner<T, U>,
       phantom: PhantomData,
     })
+  }
+}
+
+impl<T, U> Default for TapeInner<T, U> {
+  fn default() -> Self {
+    Self {
+      frames: RefCell::new(Frames::default()),
+    }
   }
 }
 
@@ -359,7 +380,10 @@ impl<T, U> TapeInner<T, U> {
 /// - We can and will only ever modify what is the top frame
 /// - When we calculate gradients, they are usually of the same shape for a given
 ///   variable... we should store a fingerprint (a graphed-hash)...
-pub struct Tape<T, F: PullbackFamily<T>> {
+pub struct Tape<T, F>
+where
+  F: PullbackFamily<T>,
+{
   inner: TapeInner<T, F::Operand>,
 }
 
@@ -375,18 +399,9 @@ where
 
   pub fn scope<G, R>(&mut self, f: G) -> R
   where
-    G: for<'inner> FnOnce(Guard<'inner, T, F::Operand, Unlocked>) -> R,
+    G: for<'inner> FnOnce(Guard<'inner, T, F, Unlocked>) -> R,
   {
     self.inner.with_scope(1, f)
-  }
-}
-
-impl<T, F> Default for Tape<T, F>
-where
-  F: PullbackFamily<T>,
-{
-  fn default() -> Self {
-    Self::new()
   }
 }
 
@@ -400,26 +415,29 @@ pub struct Unlocked;
 /// An unlocked `Guard` provides an API to construct variables in a specific scope,
 /// once a guard is locked it can create subscopes or produce gradients for the
 /// variables constructed while unlocked...
-pub struct Guard<'scope, T, U, S = Unlocked> {
+pub struct Guard<'scope, T, F, S = Unlocked>
+where
+  F: PullbackFamily<T>,
+{
   level: u8,
   /// Pointer is guaranteed to outlast 'scope...
-  tape: *const TapeInner<T, U>,
-  phantom: PhantomData<&'scope S>,
+  tape: *const TapeInner<T, F::Operand>,
+  phantom: PhantomData<(&'scope S, F)>,
 }
 
-impl<'scope, T, U> Guard<'scope, T, U, Unlocked> {
+impl<'scope, T, F> Guard<'scope, T, F, Unlocked>
+where
+  F: PullbackFamily<T>,
+{
   /// Construct a new variable of a specific value; the created variable cannot
   /// migrate out of the enclosing scope, but it can propagate mutations made in
   /// lower scopes...
   #[inline]
-  pub fn var<F>(&self, value: T) -> Var<'scope, T, F>
-  where
-    F: PullbackFamily<T, Operand = U>,
-  {
+  pub fn var(&self, value: T) -> Var<'scope, T, F::Operand> {
     let tape = self.tape;
     let level = self.level;
 
-    // safety: guards are always created under a tape...
+    // safety: guards are always created under a tapes 'scope...
     let index = unsafe { &*tape }.map_current_frame_mut(|frame| {
       let self_idx = NodeIndex::new(level, frame.nodes.len() as u64);
       // leaves: both predecessors point to self with identity...
@@ -447,7 +465,7 @@ impl<'scope, T, U> Guard<'scope, T, U, Unlocked> {
   ///
   /// Consume an unlocked guard and produce a locked guard with same lifetimes
   #[inline]
-  pub fn lock(self) -> Guard<'scope, T, U, Locked> {
+  pub fn lock(self) -> Guard<'scope, T, F, Locked> {
     Guard {
       level: self.level,
       tape: self.tape,
@@ -456,16 +474,20 @@ impl<'scope, T, U> Guard<'scope, T, U, Unlocked> {
   }
 }
 
-impl<'scope, T, U> Guard<'scope, T, U, Locked> {
+impl<'scope, T, F> Guard<'scope, T, F, Locked>
+where
+  F: PullbackFamily<T>,
+{
   /// A locked guard can spawn additional scopes for computation
   ///
   /// Subscopes will themselves provide a new guard for their own scopes...
   #[inline]
   pub fn scope<G, R>(&mut self, f: G) -> R
   where
-    G: for<'inner> FnOnce(Guard<'inner, T, U, Unlocked>) -> R,
+    G: for<'inner> FnOnce(Guard<'inner, T, F, Unlocked>) -> R,
   {
-    let tape: &TapeInner<T, U> = unsafe { &*self.tape };
+    // safety: we are under 'scope, so tape is valid...
+    let tape: &TapeInner<T, F::Operand> = unsafe { &*self.tape };
     assert!(self.level < u8::MAX);
     tape.with_scope(self.level + 1, f)
   }
@@ -473,10 +495,7 @@ impl<'scope, T, U> Guard<'scope, T, U, Locked> {
   /// A locked guard can collapse into gradients for the variables that were
   /// created on it while unlocked...
   #[inline]
-  pub fn collapse<F>(self) -> Gradients<'scope, T, F>
-  where
-    F: PullbackFamily<T, Operand = U>,
-  {
+  pub fn collapse(self) -> Gradients<'scope, T, F> {
     Gradients {
       tape: self.tape,
       phantom: PhantomData,
@@ -517,15 +536,17 @@ where
 }
 
 /// Possible derivatives for a specified scope...
-pub struct Gradients<'scope, T, F: PullbackFamily<T>> {
+pub struct Gradients<'scope, T, F>
+where
+  F: PullbackFamily<T>,
+{
   /// Pointer is guaranteed to outlast 'scope...
   tape: *const TapeInner<T, F::Operand>,
-  phantom: PhantomData<&'scope F>,
+  phantom: PhantomData<&'scope ()>,
 }
 
 impl<'scope, T, F> Gradients<'scope, T, F>
 where
-  T: ClosedAddAssign + Clone,
   F: PullbackFamily<T>,
 {
   /// Get the deltas of some variable in some scope
@@ -536,7 +557,11 @@ where
   /// Note: we require a seed gradient to start the computation. For scalar types,
   /// this is typically 1.0. For shaped types (matrices, tensors), this must match
   /// the shape of the output variable...
-  pub fn of(&self, var: &Var<'scope, T, F>, seed: T) -> Deltas<'scope, T> {
+  pub fn of(&self, var: &Var<'scope, T, F::Operand>, seed: T) -> Deltas<'scope, T>
+  where
+    T: ClosedAddAssign + Clone,
+    F::Operand: Clone,
+  {
     // safety: we are under the tapes 'scope, so tape is valid...
     let tape = unsafe { &*self.tape };
     let subgraph = topological_subgraph(tape, var);
@@ -560,22 +585,32 @@ where
       // compute phase, calculate gradients without borrowing...
       let mut grads: SmallVec<[(NodeIndex, T); 2]> = SmallVec::new();
 
-      // a-branch pullback, skipping self-loops
+      // a-branch pullback
       if pred_a.node != index {
-        let grad_a = match pred_a.op_id {
-          OpId::Identity => upstream.clone(),
-          OpId::User(ref op) => F::apply_a(op.clone(), &captures, upstream),
-        };
-        grads.push((pred_a.node, grad_a));
+        match pred_a.op_id {
+          OpId::Ignore => {}
+          OpId::Identity => {
+            grads.push((pred_a.node, upstream.clone()));
+          }
+          OpId::User(ref op) => {
+            let grad_a = F::apply_a(op.clone(), &captures, upstream);
+            grads.push((pred_a.node, grad_a));
+          }
+        }
       }
 
-      // b-branch pullback, skipping self-loops
+      // b-branch pullback
       if pred_b.node != index {
-        let grad_b = match pred_b.op_id {
-          OpId::Identity => upstream.clone(),
-          OpId::User(ref op) => F::apply_b(op.clone(), &captures, upstream),
-        };
-        grads.push((pred_b.node, grad_b));
+        match pred_b.op_id {
+          OpId::Ignore => {}
+          OpId::Identity => {
+            grads.push((pred_b.node, upstream.clone()));
+          }
+          OpId::User(ref op) => {
+            let grad_b = F::apply_b(op.clone(), &captures, upstream);
+            grads.push((pred_b.node, grad_b));
+          }
+        }
       }
 
       // write phase, emit updated deltas...
@@ -598,14 +633,13 @@ where
 
 /// Topologically sort our graph moving backwards along predecessors of a given
 /// variable...
-fn topological_subgraph<T, U, F>(
+fn topological_subgraph<T, U>(
   tape: &TapeInner<T, U>,
-  var: &Var<'_, T, F>,
+  var: &Var<'_, T, U>,
 ) -> Vec<(NodeIndex, Node<T, U>)>
 where
   T: Clone,
   U: Clone,
-  F: PullbackFamily<T, Operand = U>,
 {
   let frames = tape.frames.borrow();
 
@@ -648,10 +682,10 @@ pub struct Deltas<'scope, T> {
   phantom: PhantomData<&'scope ()>,
 }
 
-impl<'scope, T, F: PullbackFamily<T>> Index<&Var<'scope, T, F>> for Deltas<'scope, T> {
+impl<'scope, T, U> Index<&Var<'scope, T, U>> for Deltas<'scope, T> {
   type Output = T;
 
-  fn index(&self, var: &Var<'scope, T, F>) -> &Self::Output {
+  fn index(&self, var: &Var<'scope, T, U>) -> &Self::Output {
     self.deltas.get(&var.inner.index).unwrap()
   }
 }

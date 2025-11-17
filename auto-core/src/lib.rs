@@ -450,7 +450,7 @@ where
       value,
       inner: VarInner {
         index,
-        tape: tape as *const _,
+        tape,
       },
       phantom: PhantomData,
     }

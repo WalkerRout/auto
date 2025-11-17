@@ -3,8 +3,8 @@ use std::io::{BufWriter, Write};
 
 use nalgebra::{dmatrix, DMatrix};
 
-use lib_auto::matrix::{Guard, Pullback, Var, VarExt};
-use lib_auto::{Locked, Tape, Deltas};
+use lib_auto::matrix::{Guard, Mutator, Pullback, Var, VarExt};
+use lib_auto::{Deltas, Gradient, Locked, Tape};
 
 fn sigmoid<'a>(x: &Var<'a>) -> Var<'a> {
   x.neg().exp().add_f64(1.0).reciprocal()
@@ -44,38 +44,52 @@ struct FeedForward<'a> {
 
 impl<'a> FeedForward<'a> {
   fn new(guard: &Guard<'a>, layer_sizes: &[usize], learning_rate: f64) -> Self {
-    assert!(layer_sizes.len() >= 2, "Need at least input and output layer");
-    
+    assert!(
+      layer_sizes.len() >= 2,
+      "Need at least input and output layer"
+    );
+
     let mut layers = Vec::new();
     for i in 0..layer_sizes.len() - 1 {
       layers.push(Layer::new(guard, layer_sizes[i], layer_sizes[i + 1]));
     }
-    
-    FeedForward { layers, learning_rate }
+
+    FeedForward {
+      layers,
+      learning_rate,
+    }
   }
-  
+
   fn forward(&self, x: DMatrix<f64>) -> Var<'a> {
     let mut activation = self.layers[0].w.matmul_const(&x).add(&self.layers[0].b);
     activation = sigmoid(&activation);
-    
+
     for i in 1..self.layers.len() - 1 {
       activation = self.layers[i].w.matmul(&activation).add(&self.layers[i].b);
       activation = sigmoid(&activation);
     }
-    
+
     let last = self.layers.len() - 1;
-    activation = self.layers[last].w.matmul(&activation).add(&self.layers[last].b);
+    activation = self.layers[last]
+      .w
+      .matmul(&activation)
+      .add(&self.layers[last].b);
     // todo softmax, need to implement a sum function for matrices...
     sigmoid(&activation)
   }
-  
-  fn update_parameters<'scope>(&mut self, deltas: &Deltas<'scope, DMatrix<f64>>) {
+
+  fn update_parameters<'scope>(
+    &mut self,
+    muter: &mut Mutator<'scope>,
+    deltas: &Deltas<'scope, DMatrix<f64>>,
+  ) where
+    'a: 'scope,
+  {
     for layer in &mut self.layers {
       let grad_w = &deltas[&layer.w] * self.learning_rate;
       let grad_b = &deltas[&layer.b] * self.learning_rate;
-      
-      *layer.w.value_mut() -= grad_w;
-      *layer.b.value_mut() -= grad_b;
+      muter.update(&mut layer.w, |w| w - grad_w);
+      muter.update(&mut layer.b, |b| b - grad_b);
     }
   }
 }
@@ -92,12 +106,12 @@ fn train<'a, 'b>(
   writeln!(buf, "epoch,loss").unwrap();
 
   let mut final_loss = 0.0;
-  
+
   for epoch in 0..epochs {
     snapshot.scope(|guard| {
       let mut loss_sum = guard.var(dmatrix![0.0]);
       let n = x_data.len() as f64;
-      
+
       // accumulate loss...
       for i in 0..x_data.len() {
         let (x1, x2) = x_data[i];
@@ -108,9 +122,9 @@ fn train<'a, 'b>(
       }
       let loss_avg = loss_sum.div_f64(n);
 
-      let grads = guard.lock().collapse();
+      let (mut muter, grads) = guard.lock().collapse();
       let deltas = loss_avg.deltas(&grads);
-      net.update_parameters(&deltas);
+      net.update_parameters(&mut muter, &deltas);
 
       if epoch % 1000 == 0 {
         println!("Epoch {} | Loss = {:.6}", epoch, loss_avg.value()[(0, 0)]);
@@ -119,7 +133,7 @@ fn train<'a, 'b>(
       final_loss = loss_avg.value()[(0, 0)];
     });
   }
-  
+
   buf.flush().unwrap();
   final_loss
 }
@@ -127,13 +141,19 @@ fn train<'a, 'b>(
 fn train_network<'a>(guard: Guard<'a>) {
   let layer_sizes = [2, 6, 1];
   let learning_rate = 0.1;
-  let epochs = 50_000;    
+  let epochs = 50_000;
   let mut net = FeedForward::new(&guard, &layer_sizes, learning_rate);
-  
+
   // training data...
   let x_train = [
-    (0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0),
-    (1.0, 0.0), (0.0, 0.0), (0.0, 1.0), (1.0, 1.0),
+    (0.0, 0.0),
+    (0.0, 1.0),
+    (1.0, 0.0),
+    (1.0, 1.0),
+    (1.0, 0.0),
+    (0.0, 0.0),
+    (0.0, 1.0),
+    (1.0, 1.0),
   ];
   let y_train = [0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0];
 
@@ -149,39 +169,49 @@ fn train_network<'a>(guard: Guard<'a>) {
   println!("│  input  │  input  │ prediction │ expected │");
   println!("│   x1    │   x2    │            │          │");
   println!("├─────────┼─────────┼────────────┼──────────┤");
-  
+
   for &(x1, x2) in &test_data {
     let input = dmatrix![x1; x2];
     let output = net.forward(input);
     let prediction = output.value()[(0, 0)];
     // calculate actual on the fly, but this is y_test...
-    let expected = if (x1 as i32) ^ (x2 as i32) == 1 { 1.0 } else { 0.0 };
-    let correct = if (prediction > 0.5 && expected == 1.0) || (prediction <= 0.5 && expected == 0.0) {
+    let expected = if (x1 as i32) ^ (x2 as i32) == 1 {
+      1.0
+    } else {
+      0.0
+    };
+    let correct = if (prediction > 0.5 && expected == 1.0) || (prediction <= 0.5 && expected == 0.0)
+    {
       "OK"
     } else {
       "FAIL"
     };
-    
+
     println!(
       "│  {:.1}    │  {:.1}    │   {:.4}   │  {:.1}     │ {}",
       x1, x2, prediction, expected, correct
     );
   }
   println!("└─────────┴─────────┴────────────┴──────────┘");
-  
+
   let total_params: usize = layer_sizes
     .windows(2)
     .map(|w| w[0] * w[1] + w[1]) // weights + biases
     .sum();
-  
+
   println!("\nnetwork statistics:");
   println!("  total layers: {}", layer_sizes.len());
   println!("  total parameters: {}", total_params);
   println!("  parameters per layer:");
   for i in 0..layer_sizes.len() - 1 {
     let layer_params = layer_sizes[i] * layer_sizes[i + 1] + layer_sizes[i + 1];
-    println!("    layer {}: {} -> {} ({} params)", 
-      i + 1, layer_sizes[i], layer_sizes[i + 1], layer_params);
+    println!(
+      "    layer {}: {} -> {} ({} params)",
+      i + 1,
+      layer_sizes[i],
+      layer_sizes[i + 1],
+      layer_params
+    );
   }
 }
 

@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use lib_auto::scalar::{Guard, Pullback, Var, VarExt};
-use lib_auto::{Locked, Tape};
+use lib_auto::{Gradient, Locked, Tape};
 
 // a variable's scope cannot exceed its tape, so lets just use the same lifetime
 // for brevity...
@@ -102,21 +102,32 @@ fn train<'a>(net: &mut XorNet<'a>, guard: Guard<'a, Locked>, epochs: usize) -> f
       let loss_avg = loss_sum.div_f64(n);
 
       // we finished with this epoch's calculations, lets get some gradients...
-      let grads = guard.lock().collapse();
+      let (mut muter, grads) = guard.lock().collapse();
       let dloss = loss_avg.deltas(&grads);
 
-      // simple gradient descent for each weight/bias
-      *net.w11.value_mut() -= net.learning_rate * dloss[&net.w11];
-      *net.w12.value_mut() -= net.learning_rate * dloss[&net.w12];
-      *net.b1.value_mut() -= net.learning_rate * dloss[&net.b1];
-
-      *net.w21.value_mut() -= net.learning_rate * dloss[&net.w21];
-      *net.w22.value_mut() -= net.learning_rate * dloss[&net.w22];
-      *net.b2.value_mut() -= net.learning_rate * dloss[&net.b2];
-
-      *net.v1.value_mut() -= net.learning_rate * dloss[&net.v1];
-      *net.v2.value_mut() -= net.learning_rate * dloss[&net.v2];
-      *net.b_out.value_mut() -= net.learning_rate * dloss[&net.b_out];
+      // (simple) gradient descent for each weight/bias
+      // - very cluttered when updating a lot of variables at once...
+      //   - this is why we have the auto-matrix crate!
+      let lr = net.learning_rate;
+      let grad_w11 = dloss[&net.w11] * lr;
+      let grad_w12 = dloss[&net.w12] * lr;
+      let grad_b1 = dloss[&net.b1] * lr;
+      let grad_w21 = dloss[&net.w21] * lr;
+      let grad_w22 = dloss[&net.w22] * lr;
+      let grad_b2 = dloss[&net.b2] * lr;
+      let grad_v1 = dloss[&net.v1] * lr;
+      let grad_v2 = dloss[&net.v2] * lr;
+      let grad_b_out = dloss[&net.b_out] * lr;
+      // update after, to avoid borrowing issues...
+      muter.update(&mut net.w11, |w| w - grad_w11);
+      muter.update(&mut net.w12, |w| w - grad_w12);
+      muter.update(&mut net.b1, |b| b - grad_b1);
+      muter.update(&mut net.w21, |w| w - grad_w21);
+      muter.update(&mut net.w22, |w| w - grad_w22);
+      muter.update(&mut net.b2, |b| b - grad_b2);
+      muter.update(&mut net.v1, |v| v - grad_v1);
+      muter.update(&mut net.v2, |v| v - grad_v2);
+      muter.update(&mut net.b_out, |b| b - grad_b_out);
 
       if epoch % 1000 == 0 {
         println!("Epoch {} | Loss = {:.6}", epoch, *loss_avg.value());

@@ -42,6 +42,11 @@ pub enum OpId<U> {
   User(U),
 }
 
+/// Produce mempty to seed a gradient computation (multiplicative identity)
+pub trait Seedable<T> {
+  fn seed(value: &T) -> T;
+}
+
 /// A family of pullback operations
 ///
 /// This trait allows users to define their own operation families with custom
@@ -53,7 +58,7 @@ pub enum OpId<U> {
 /// As a result, we only provide an interface for binary functions, as they are
 /// expressive enough to represent unary function symbols, and by the lemma, all
 /// n-ary function symbols (through multiple implementations composed, of course)
-pub trait PullbackFamily<T> {
+pub trait PullbackFamily<T>: Seedable<T> {
   /// User defined operation identifier, usually an enum...
   type Operand: Clone;
 
@@ -85,19 +90,6 @@ pub struct PullbackSpec<T, F: PullbackFamily<T>> {
   pub op_id_b: OpId<F::Operand>,
   pub captures: SmallVec<[T; 2]>,
 }
-
-/*
-/// Extension trait for computing gradients of a variable
-///
-/// This trait is implemented by type-specific crates to provide the appropriate
-/// seed/unit gradient for differentiation
-pub trait Gradient<'scope, T, U> {
-  /// Compute the deltas/gradient set for self
-  fn grads<F>(&self, gradients: &Gradients<'scope, T, F>) -> Deltas<'scope, T>
-  where
-    F: PullbackFamily<T, Operand = U>;
-}
-*/
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 struct NodeIndex(u64);
@@ -148,16 +140,10 @@ pub struct Var<'scope, T, U> {
 }
 
 impl<T, U> Var<'_, T, U> {
-  /// Get a reference to the value stored in this variable
+  /// Get a readonly reference to the value stored in this variable
   #[inline(always)]
   pub fn value(&self) -> &T {
     &self.value
-  }
-
-  /// Get a mutable reference to the value stored in this variable
-  #[inline(always)]
-  pub fn value_mut(&mut self) -> &mut T {
-    &mut self.value
   }
 
   /// Core primitive for constructing new variables from binary operations.
@@ -504,11 +490,39 @@ where
   /// A locked guard can collapse into gradients for the variables that were
   /// created on it while unlocked...
   #[inline]
-  pub fn collapse(self) -> Gradients<'scope, T, F> {
-    Gradients {
-      tape: self.tape,
-      phantom: PhantomData,
-    }
+  pub fn collapse(self) -> (Mutator<'scope, F>, Gradients<'scope, T, F>) {
+    (
+      Mutator {
+        phantom: PhantomData,
+      },
+      Gradients {
+        tape: self.tape,
+        phantom: PhantomData,
+      },
+    )
+  }
+}
+
+pub struct Mutator<'scope, F> {
+  phantom: PhantomData<&'scope F>,
+}
+
+impl<'scope, F> Mutator<'scope, F> {
+  // jesus christ
+  pub fn update<'a, T, U, G>(&mut self, var: &mut Var<'a, T, U>, f: G)
+  where
+    'a: 'scope,
+    G: FnOnce(&T) -> T,
+    F: PullbackFamily<T, Operand = U>,
+  {
+    var.value = f(&var.value);
+  }
+
+  pub fn set<'a, T, U>(&mut self, var: &mut Var<'a, T, U>, value: T)
+  where
+    'a: 'scope,
+  {
+    var.value = value;
   }
 }
 
@@ -682,6 +696,31 @@ where
   }
 
   result
+}
+
+/// Extension trait for computing gradients of a variable
+///
+/// This trait is implemented by type-specific crates to provide the appropriate
+/// seed/unit gradient for differentiation
+pub trait Gradient<'scope, T, U> {
+  /// Compute the deltas/gradient set for self
+  fn deltas<F>(&self, gradients: &Gradients<'scope, T, F>) -> Deltas<'scope, T>
+  where
+    F: PullbackFamily<T, Operand = U>;
+}
+
+impl<'scope, T, U> Gradient<'scope, T, U> for Var<'scope, T, U>
+where
+  U: Clone,
+  T: ClosedAddAssign + Clone,
+{
+  fn deltas<F>(&self, gradients: &Gradients<'scope, T, F>) -> Deltas<'scope, T>
+  where
+    F: PullbackFamily<T, Operand = U>,
+  {
+    let seed = F::seed(self.value());
+    gradients.of(self, seed)
+  }
 }
 
 /// The deltas of some variable in a specified scope; deltas can be with respect

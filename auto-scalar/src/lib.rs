@@ -7,7 +7,7 @@
 use smallvec::SmallVec;
 
 use lib_auto_core::{
-  self as core, Deltas, Gradients, OpId, Operation, PullbackFamily, PullbackSpec, Unlocked,
+  self as core, OpId, Operation, PullbackFamily, PullbackSpec, Seedable, Unlocked,
 };
 
 pub type Guard<'a, L = Unlocked> = core::Guard<'a, f64, Pullback, L>;
@@ -46,6 +46,12 @@ pub enum ScalarOp {
 
 /// Pullback family for scalar f64 operations
 pub struct Pullback;
+
+impl Seedable<f64> for Pullback {
+  fn seed(_: &f64) -> f64 {
+    1.0
+  }
+}
 
 impl PullbackFamily<f64> for Pullback {
   type Operand = ScalarOp;
@@ -459,10 +465,6 @@ pub trait VarExt<'scope> {
   fn abs(&self) -> Self;
 
   fn neg(&self) -> Self;
-
-  fn deltas<F>(&self, gradients: &Gradients<'scope, f64, F>) -> Deltas<'scope, f64>
-  where
-    F: PullbackFamily<f64, Operand = ScalarOp>;
 }
 
 impl<'scope> VarExt<'scope> for core::Var<'scope, f64, ScalarOp> {
@@ -597,20 +599,12 @@ impl<'scope> VarExt<'scope> for core::Var<'scope, f64, ScalarOp> {
   fn neg(&self) -> Self {
     self.binary_op(self, NegOp)
   }
-
-  fn deltas<F>(&self, gradients: &Gradients<'scope, f64, F>) -> Deltas<'scope, f64>
-  where
-    F: PullbackFamily<f64, Operand = ScalarOp>,
-  {
-    // scalar seed is 1.0
-    gradients.of(self, 1.0)
-  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use lib_auto_core::Tape;
+  use lib_auto_core::{Gradient, Tape};
 
   mod var {
     use super::*;
@@ -632,8 +626,8 @@ mod tests {
         let b = guard.var(4.0);
         let c = a.add(&b);
         assert_eq!(*c.value(), 7.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = 1, df/db = 1
         assert_eq!(dc[&a], 1.0);
         assert_eq!(dc[&b], 1.0);
@@ -647,8 +641,8 @@ mod tests {
         let a = guard.var(3.0);
         let c = a.add_f64(5.0);
         assert_eq!(*c.value(), 8.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = 1
         assert_eq!(dc[&a], 1.0);
       });
@@ -662,8 +656,8 @@ mod tests {
         let b = guard.var(4.0);
         let c = a.sub(&b);
         assert_eq!(*c.value(), 3.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = 1, df/db = -1
         assert_eq!(dc[&a], 1.0);
         assert_eq!(dc[&b], -1.0);
@@ -677,8 +671,8 @@ mod tests {
         let a = guard.var(7.0);
         let c = a.sub_f64(3.0);
         assert_eq!(*c.value(), 4.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = 1
         assert_eq!(dc[&a], 1.0);
       });
@@ -692,8 +686,8 @@ mod tests {
         let b = guard.var(4.0);
         let c = a.mul(&b);
         assert_eq!(*c.value(), 12.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = b, df/db = a
         assert_eq!(dc[&a], 4.0);
         assert_eq!(dc[&b], 3.0);
@@ -707,8 +701,8 @@ mod tests {
         let a = guard.var(3.0);
         let c = a.mul_f64(5.0);
         assert_eq!(*c.value(), 15.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = 5
         assert_eq!(dc[&a], 5.0);
       });
@@ -722,8 +716,8 @@ mod tests {
         let b = guard.var(3.0);
         let c = a.div(&b);
         assert_eq!(*c.value(), 2.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = 1/b, df/db = -a/b^2
         assert_eq!(dc[&a], 1.0 / 3.0);
         assert_eq!(dc[&b], -6.0 / 9.0);
@@ -737,8 +731,8 @@ mod tests {
         let a = guard.var(6.0);
         let c = a.div_f64(2.0);
         assert_eq!(*c.value(), 3.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = 1/2
         assert_eq!(dc[&a], 0.5);
       });
@@ -752,8 +746,8 @@ mod tests {
         let b = guard.var(3.0);
         let c = a.pow(&b);
         assert_eq!(*c.value(), 8.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = b * a^(b-1)
         // df/db = a^b * ln(a)
         assert_eq!(dc[&a], 3.0 * 4.0);
@@ -768,8 +762,8 @@ mod tests {
         let a = guard.var(2.0);
         let c = a.powf(3.0);
         assert_eq!(*c.value(), 8.0);
-        let grads = guard.lock().collapse();
-        let dc = grads.of(&c, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dc = c.deltas(&grads);
         // df/da = 3 * a^(3-1)
         assert_eq!(dc[&a], 12.0);
       });
@@ -782,8 +776,8 @@ mod tests {
         let a = guard.var(2.0);
         let neg_a = a.neg();
         assert_eq!(*neg_a.value(), -2.0);
-        let grads = guard.lock().collapse();
-        let dneg_a = grads.of(&neg_a, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dneg_a = neg_a.deltas(&grads);
         // df/da = -1
         assert_eq!(dneg_a[&a], -1.0);
       });
@@ -796,8 +790,8 @@ mod tests {
         let a = guard.var(1.3);
         let b = a.reciprocal();
         assert_eq!(*b.value(), 1.0 / 1.3);
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = -1/a^2
         assert_eq!(db[&a], -1.0 / (1.3 * 1.3));
       });
@@ -810,8 +804,8 @@ mod tests {
         let a = guard.var(1.3);
         let b = a.sin();
         assert_eq!(*b.value(), 1.3f64.sin());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = cos(a)
         assert_eq!(db[&a], 1.3f64.cos());
       });
@@ -824,8 +818,8 @@ mod tests {
         let a = guard.var(3.1);
         let b = a.cos();
         assert_eq!(*b.value(), 3.1f64.cos());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = -sin(a)
         assert_eq!(db[&a], -3.1f64.sin());
       });
@@ -838,8 +832,8 @@ mod tests {
         let a = guard.var(5.6);
         let b = a.tan();
         assert_eq!(*b.value(), 5.6f64.tan());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = sec^2(a)
         assert_eq!(db[&a], 1.0 / (5.6f64.cos().powi(2)));
       });
@@ -852,8 +846,8 @@ mod tests {
         let a = guard.var(5.6);
         let b = a.ln();
         assert_eq!(*b.value(), 5.6f64.ln());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/a
         assert_eq!(db[&a], 1.0 / 5.6);
       });
@@ -867,8 +861,8 @@ mod tests {
         let base = 3.0;
         let b = a.log(base);
         assert_eq!(*b.value(), 5.6f64.log(base));
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/(a ln(b))
         assert_eq!(db[&a], 1.0 / (5.6 * base.ln()));
       });
@@ -881,8 +875,8 @@ mod tests {
         let a = guard.var(1.0);
         let b = a.log10();
         assert_eq!(*b.value(), 0.0);
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/(a ln(10))
         assert_eq!(db[&a], 1.0 / 10.0f64.ln());
       });
@@ -895,8 +889,8 @@ mod tests {
         let a = guard.var(2.0);
         let b = a.log2();
         assert_eq!(*b.value(), 1.0);
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/(a ln(2))
         assert_eq!(db[&a], 1.0 / (2.0 * 2.0f64.ln()));
       });
@@ -909,8 +903,8 @@ mod tests {
         let a = guard.var(0.5);
         let b = a.asin();
         assert_eq!(*b.value(), 0.5f64.asin());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/sqrt(1-a^2)
         assert_eq!(db[&a], 1.0 / f64::sqrt(1.0 - 0.25));
       });
@@ -923,8 +917,8 @@ mod tests {
         let a = guard.var(0.5);
         let b = a.acos();
         assert_eq!(*b.value(), 0.5f64.acos());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = -1/sqrt(1-a^2)
         assert_eq!(db[&a], -1.0 / f64::sqrt(1.0 - 0.25));
       });
@@ -937,8 +931,8 @@ mod tests {
         let a = guard.var(1.2);
         let b = a.atan();
         assert_eq!(*b.value(), 1.2f64.atan());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/(1+a^2)
         assert_eq!(db[&a], 1.0 / (1.0 + 1.44));
       });
@@ -951,8 +945,8 @@ mod tests {
         let a = guard.var(1.3);
         let b = a.sinh();
         assert_eq!(*b.value(), 1.3f64.sinh());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = cosh(a)
         assert_eq!(db[&a], 1.3f64.cosh());
       });
@@ -965,8 +959,8 @@ mod tests {
         let a = guard.var(1.3);
         let b = a.cosh();
         assert_eq!(*b.value(), 1.3f64.cosh());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = sinh(a)
         assert_eq!(db[&a], 1.3f64.sinh());
       });
@@ -979,8 +973,8 @@ mod tests {
         let a = guard.var(0.8);
         let b = a.tanh();
         assert_eq!(*b.value(), 0.8f64.tanh());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/cosh^2(a)
         assert_eq!(db[&a], 1.0 / (0.8f64.cosh() * 0.8f64.cosh()));
       });
@@ -993,8 +987,8 @@ mod tests {
         let a = guard.var(1.5);
         let b = a.asinh();
         assert_eq!(*b.value(), 1.5f64.asinh());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/sqrt(1+a^2)
         assert_eq!(db[&a], 1.0 / f64::sqrt(1.0 + 2.25));
       });
@@ -1007,8 +1001,8 @@ mod tests {
         let a = guard.var(2.0);
         let b = a.acosh();
         assert_eq!(*b.value(), 2.0f64.acosh());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/sqrt(a^2-1)
         assert_eq!(db[&a], 1.0 / f64::sqrt(4.0 - 1.0));
       });
@@ -1021,8 +1015,8 @@ mod tests {
         let a = guard.var(0.0);
         let b = a.atanh();
         assert_eq!(*b.value(), 0.0);
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/(1-a^2)
         assert_eq!(db[&a], 1.0);
       });
@@ -1035,8 +1029,8 @@ mod tests {
         let a = guard.var(1.3);
         let b = a.exp();
         assert_eq!(*b.value(), 1.3f64.exp());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = exp(a)
         assert_eq!(db[&a], 1.3f64.exp());
       });
@@ -1049,8 +1043,8 @@ mod tests {
         let a = guard.var(1.3);
         let b = a.exp2();
         assert_eq!(*b.value(), 1.3f64.exp2());
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = exp2(a) * ln(2)
         assert_eq!(db[&a], 1.3f64.exp2() * 2.0f64.ln());
       });
@@ -1063,8 +1057,8 @@ mod tests {
         let a = guard.var(4.0);
         let b = a.sqrt();
         assert_eq!(*b.value(), 2.0);
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/(2*sqrt(a))
         assert_eq!(db[&a], 0.25);
       });
@@ -1077,8 +1071,8 @@ mod tests {
         let a = guard.var(1.0);
         let b = a.cbrt();
         assert_eq!(*b.value(), 1.0);
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = 1/(3*cbrt(a^2))
         assert_eq!(db[&a], 1.0 / 3.0);
       });
@@ -1091,8 +1085,8 @@ mod tests {
         let a = guard.var(-3.0);
         let b = a.abs();
         assert_eq!(*b.value(), 3.0);
-        let grads = guard.lock().collapse();
-        let db = grads.of(&b, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let db = b.deltas(&grads);
         // df/da = a/|a| = -1 for a < 0
         assert_eq!(db[&a], -1.0);
       });
@@ -1112,8 +1106,8 @@ mod tests {
         let res = a.pow(&b).sub(&c.asinh().div_f64(2.0)).add_f64(1.0f64.sin());
         let expected = 5.0f64.powf(2.0) - 1.0f64.asinh() / 2.0 + 1.0f64.sin();
         assert_eq!(*res.value(), expected);
-        let grads = guard.lock().collapse();
-        let dres = grads.of(&res, 1.0);
+        let (_, grads) = guard.lock().collapse();
+        let dres = res.deltas(&grads);
         let ga = dres[&a]; // df/da
         let gb = dres[&b]; // df/db
         let gc = dres[&c]; // df/dc

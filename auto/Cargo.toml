@@ -30,6 +30,7 @@ path = "../examples/simple.rs"
 [[example]]
 name = "xor_matrix"
 path = "../examples/xor_matrix.rs"
+required-features = ["matrix"]
 
 [[example]]
 name = "xor_scalar"

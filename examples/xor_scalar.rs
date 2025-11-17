@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use lib_auto_core::{Tape, Unlocked, Locked};
-use lib_auto_scalar::{Guard, Var, Pullback, VarExt};
+use lib_auto::{Tape, Locked};
+use lib_auto::scalar::{Guard, Pullback, Var, VarExt};
 
 // a variable's scope cannot exceed its tape, so lets just use the same lifetime
 // for brevity...
@@ -41,7 +41,7 @@ struct XorNet<'a> {
 }
 
 impl<'a> XorNet<'a> {
-  fn new(guard: &Guard<'a, Unlocked>) -> Self {
+  fn new(guard: &Guard<'a>) -> Self {
     // fake random initial weights (i dont want to import rand...)
     XorNet {
       w11: guard.var(1.2),
@@ -103,7 +103,7 @@ fn train<'a>(net: &mut XorNet<'a>, guard: Guard<'a, Locked>, epochs: usize) -> f
 
       // we finished with this epoch's calculations, lets get some gradients...
       let grads = guard.lock().collapse();
-      let dloss = grads.of(&loss_avg, 1.0);
+      let dloss = loss_avg.deltas(&grads);
 
       // simple gradient descent for each weight/bias
       *net.w11.value_mut() -= net.learning_rate * dloss[&net.w11];

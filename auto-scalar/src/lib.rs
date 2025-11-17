@@ -460,7 +460,7 @@ pub trait VarExt<'scope> {
 
   fn neg(&self) -> Self;
 
-  fn grads<F>(&self, gradients: &Gradients<'scope, f64, F>) -> Deltas<'scope, f64>
+  fn deltas<F>(&self, gradients: &Gradients<'scope, f64, F>) -> Deltas<'scope, f64>
   where
     F: PullbackFamily<f64, Operand = ScalarOp>;
 }
@@ -598,7 +598,7 @@ impl<'scope> VarExt<'scope> for core::Var<'scope, f64, ScalarOp> {
     self.binary_op(self, NegOp)
   }
 
-  fn grads<F>(&self, gradients: &Gradients<'scope, f64, F>) -> Deltas<'scope, f64>
+  fn deltas<F>(&self, gradients: &Gradients<'scope, f64, F>) -> Deltas<'scope, f64>
   where
     F: PullbackFamily<f64, Operand = ScalarOp>,
   {

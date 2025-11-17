@@ -405,6 +405,15 @@ where
   }
 }
 
+impl<T, F> Default for Tape<T, F>
+where
+  F: PullbackFamily<T>
+{
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 /// Phantom type for a locked guard; a locked guard cannot create variables
 /// in that it is not allowed to modify it's scope
 pub struct Locked;
@@ -680,6 +689,15 @@ where
 pub struct Deltas<'scope, T> {
   deltas: FxHashMap<NodeIndex, T>,
   phantom: PhantomData<&'scope ()>,
+}
+
+impl<'scope, T> Deltas<'scope, T> {
+  pub fn get<U>(&self, var: &Var<'scope, T, U>) -> Option<T>
+  where
+    T: Clone,
+  {
+    self.deltas.get(&var.inner.index).cloned()
+  }
 }
 
 impl<'scope, T, U> Index<&Var<'scope, T, U>> for Deltas<'scope, T> {

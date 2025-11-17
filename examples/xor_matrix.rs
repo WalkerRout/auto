@@ -3,8 +3,8 @@ use std::io::{BufWriter, Write};
 
 use nalgebra::{dmatrix, DMatrix};
 
-use lib_auto_core::Tape;
-use lib_auto_matrix::{Guard, Pullback, Var, VarExt};
+use lib_auto::{Tape, Locked};
+use lib_auto::matrix::{Guard, Pullback, Var, VarExt};
 
 // a variable's scope cannot exceed its tape, so lets just use the same lifetime
 // for brevity...
@@ -49,16 +49,15 @@ impl<'a> XorNet<'a> {
   }
 
   #[inline]
-  fn forward(&self, guard: &Guard<'a>, x1: f64, x2: f64) -> Var<'a> {
-    let x = guard.var(dmatrix![x1; x2]);
-    let z1 = self.w1.t().matmul(&x).add(&self.b1);
+  fn forward(&self, x: DMatrix<f64>) -> Var<'a> {  
+    let z1 = self.w1.t().matmul_const(&x).add(&self.b1);
     let a1 = sigmoid(&z1);
     let z_out = self.w2.t().matmul(&a1).add(&self.b2);
     sigmoid(&z_out)
   }
 }
 
-fn train<'a, 'b>(net: &mut XorNet<'a>, guard: Guard<'b>, epochs: usize) -> f64 {
+fn train<'a, 'b>(net: &mut XorNet<'a>, mut snapshot: Guard<'b, Locked>, epochs: usize) -> f64 {
   let x1_data = [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0];
   let x2_data = [0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0];
   let y_data = [0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0];
@@ -68,13 +67,12 @@ fn train<'a, 'b>(net: &mut XorNet<'a>, guard: Guard<'b>, epochs: usize) -> f64 {
   writeln!(buf, "epoch,loss").unwrap();
 
   let mut final_loss = 0.0;
-  let mut snapshot = guard.lock();
   for epoch in 0..epochs {
     snapshot.scope(|guard| {
       let mut loss_sum = guard.var(dmatrix![0.0]);
       let n = x1_data.len() as f64;
       for i in 0..x1_data.len() {
-        let a_out = net.forward(&guard, x1_data[i], x2_data[i]);
+        let a_out = net.forward(dmatrix![x1_data[i]; x2_data[i]]);
         let loss_sample = binary_cross_entropy(&a_out, y_data[i]);
         loss_sum = loss_sum.add(&loss_sample);
       }
@@ -82,7 +80,7 @@ fn train<'a, 'b>(net: &mut XorNet<'a>, guard: Guard<'b>, epochs: usize) -> f64 {
 
       // we finished with this epoch's calculations, lets get some gradients...
       let grads = guard.lock().collapse();
-      let dloss = grads.of(&loss_avg, dmatrix![1.0]);
+      let dloss = loss_avg.deltas(&grads);
 
       // simple gradient descent for each weight/bias
       let grad_w1 = &dloss[&net.w1] * net.learning_rate;
@@ -112,8 +110,8 @@ fn main() {
   tape.scope(|guard| {
     let epochs = 100_000;
     let mut net = XorNet::new(&guard);
-    let mut snapshot = guard.lock();
-    let final_loss = snapshot.scope(|guard| train(&mut net, guard, epochs));
+    let snapshot = guard.lock();
+    let final_loss = train(&mut net, snapshot, epochs);
 
     println!("trained parameters:");
     println!("W1 =\n{}", net.w1.value());
@@ -126,15 +124,13 @@ fn main() {
     let x2_data = [0.0, 1.0, 0.0, 1.0];
     println!("testing network predictions:");
     for i in 0..x1_data.len() {
-      snapshot.scope(|guard| {
-        let output = net.forward(&guard, x1_data[i], x2_data[i]);
-        println!(
-          "input: ({}, {}), output: {:.6}",
-          x1_data[i],
-          x2_data[i],
-          output.value()[(0, 0)]
-        );
-      });
+      let output = net.forward(dmatrix![x1_data[i]; x2_data[i]]);
+      println!(
+        "input: ({}, {}), output: {:.6}",
+        x1_data[i],
+        x2_data[i],
+        output.value()[(0, 0)]
+      );
     }
   });
 }

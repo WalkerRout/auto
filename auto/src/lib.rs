@@ -15,3 +15,6 @@ pub use lib_auto_core::*;
 
 #[cfg(feature = "scalar")]
 pub use lib_auto_scalar as scalar;
+
+#[cfg(feature = "matrix")]
+pub use lib_auto_matrix as matrix;

@@ -9,7 +9,7 @@ use nalgebra::DMatrix;
 
 use smallvec::smallvec;
 
-use lib_auto_core::{self as core, OpId, Operation, PullbackFamily, PullbackSpec, Unlocked};
+use lib_auto_core::{self as core, OpId, Operation, Deltas, Gradients, PullbackFamily, PullbackSpec, Unlocked};
 
 // Public API type aliases matching auto-scalar pattern
 pub type Guard<'a, L = Unlocked> = core::Guard<'a, DMatrix<f64>, Pullback, L>;
@@ -31,6 +31,12 @@ pub enum MatrixOp {
   Transpose,
   MulScalar,
   DivScalar,
+  // Constant matrix operations (matrix constant has no gradient)
+  AddConst,
+  SubConst,
+  MulConst,    // Element-wise multiply (Hadamard)
+  DivConst,    // Element-wise divide
+  MatMulConst, // Matrix multiplication
 }
 
 /// Pullback family for matrix operations
@@ -76,6 +82,27 @@ impl PullbackFamily<DMatrix<f64>> for Pullback {
         let scalar = captures[0][(0, 0)];
         upstream / scalar
       }
+      MatrixOp::AddConst => {
+        // C = A + B_const, dL/dA = dL/dC (identity)
+        upstream.clone()
+      }
+      MatrixOp::SubConst => {
+        // C = A - B_const, dL/dA = dL/dC (identity)
+        upstream.clone()
+      }
+      MatrixOp::MulConst => {
+        // C = A ⊙ B_const, dL/dA = dL/dC ⊙ B_const
+        upstream.component_mul(&captures[0])
+      }
+      MatrixOp::DivConst => {
+        // C = A ⊘ B_const, dL/dA = dL/dC ⊘ B_const
+        upstream.component_div(&captures[0])
+      }
+      MatrixOp::MatMulConst => {
+        // C = A * B_const, dL/dA = dL/dC * B_const^T
+        let b_const_t = captures[0].transpose();
+        upstream * b_const_t
+      }
     }
   }
 
@@ -105,6 +132,11 @@ impl PullbackFamily<DMatrix<f64>> for Pullback {
       MatrixOp::Transpose => DMatrix::zeros(0, 0),
       MatrixOp::MulScalar => DMatrix::zeros(0, 0),
       MatrixOp::DivScalar => DMatrix::zeros(0, 0),
+      MatrixOp::AddConst => DMatrix::zeros(0, 0),    // Const has no gradient
+      MatrixOp::SubConst => DMatrix::zeros(0, 0),    // Const has no gradient
+      MatrixOp::MulConst => DMatrix::zeros(0, 0),    // Const has no gradient
+      MatrixOp::DivConst => DMatrix::zeros(0, 0),    // Const has no gradient
+      MatrixOp::MatMulConst => DMatrix::zeros(0, 0), // Const has no gradient
     }
   }
 }
@@ -320,34 +352,147 @@ impl Operation<DMatrix<f64>, Pullback> for DivF64Op {
   }
 }
 
+pub struct AddConstOp(pub DMatrix<f64>);
+
+impl Operation<DMatrix<f64>, Pullback> for AddConstOp {
+  fn forward(&self, a: &DMatrix<f64>, _b: &DMatrix<f64>) -> DMatrix<f64> {
+    a + &self.0
+  }
+
+  fn pullback_spec(
+    &self,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
+    PullbackSpec {
+      op_id_a: OpId::User(MatrixOp::AddConst),
+      op_id_b: OpId::Ignore,
+      captures: smallvec![self.0.clone()],
+    }
+  }
+}
+
+pub struct SubConstOp(pub DMatrix<f64>);
+
+impl Operation<DMatrix<f64>, Pullback> for SubConstOp {
+  fn forward(&self, a: &DMatrix<f64>, _b: &DMatrix<f64>) -> DMatrix<f64> {
+    a - &self.0
+  }
+
+  fn pullback_spec(
+    &self,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
+    PullbackSpec {
+      op_id_a: OpId::User(MatrixOp::SubConst),
+      op_id_b: OpId::Ignore,
+      captures: smallvec![self.0.clone()],
+    }
+  }
+}
+
+pub struct MulConstOp(pub DMatrix<f64>);
+
+impl Operation<DMatrix<f64>, Pullback> for MulConstOp {
+  fn forward(&self, a: &DMatrix<f64>, _b: &DMatrix<f64>) -> DMatrix<f64> {
+    a.component_mul(&self.0)
+  }
+
+  fn pullback_spec(
+    &self,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
+    PullbackSpec {
+      op_id_a: OpId::User(MatrixOp::MulConst),
+      op_id_b: OpId::Ignore,
+      captures: smallvec![self.0.clone()],
+    }
+  }
+}
+
+pub struct DivConstOp(pub DMatrix<f64>);
+
+impl Operation<DMatrix<f64>, Pullback> for DivConstOp {
+  fn forward(&self, a: &DMatrix<f64>, _b: &DMatrix<f64>) -> DMatrix<f64> {
+    a.component_div(&self.0)
+  }
+
+  fn pullback_spec(
+    &self,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
+    PullbackSpec {
+      op_id_a: OpId::User(MatrixOp::DivConst),
+      op_id_b: OpId::Ignore,
+      captures: smallvec![self.0.clone()],
+    }
+  }
+}
+
+pub struct MatMulConstOp(pub DMatrix<f64>);
+
+impl Operation<DMatrix<f64>, Pullback> for MatMulConstOp {
+  fn forward(&self, a: &DMatrix<f64>, _b: &DMatrix<f64>) -> DMatrix<f64> {
+    a * &self.0
+  }
+
+  fn pullback_spec(
+    &self,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
+  ) -> PullbackSpec<DMatrix<f64>, Pullback> {
+    PullbackSpec {
+      op_id_a: OpId::User(MatrixOp::MatMulConst),
+      op_id_b: OpId::Ignore,
+      captures: smallvec![self.0.clone()],
+    }
+  }
+}
+
 /// Extension trait providing matrix operations on Var<DMatrix<f64>>
 pub trait VarExt<'scope> {
-  /// Element-wise addition
   fn add(&self, other: &Self) -> Self;
-  /// Element-wise subtraction
+
   fn sub(&self, other: &Self) -> Self;
-  /// Matrix multiplication (dot product)
+
   fn matmul(&self, other: &Self) -> Self;
-  /// Element-wise multiplication (Hadamard product)
+
   fn hadamard(&self, other: &Self) -> Self;
-  /// Element-wise division
+
   fn div(&self, other: &Self) -> Self;
-  /// Element-wise negation
+
   fn neg(&self) -> Self;
-  /// Element-wise exponential
+
   fn exp(&self) -> Self;
-  /// Element-wise natural logarithm
+
   fn ln(&self) -> Self;
-  /// Element-wise reciprocal (1/x)
+
   fn reciprocal(&self) -> Self;
-  /// Transpose
+
   fn t(&self) -> Self;
-  /// Add scalar to all elements
+
   fn add_f64(&self, other: f64) -> Self;
-  /// Multiply all elements by scalar
+
   fn mul_f64(&self, other: f64) -> Self;
-  /// Divide all elements by scalar
+
   fn div_f64(&self, other: f64) -> Self;
+
+  fn add_const(&self, other: &DMatrix<f64>) -> Self;
+
+  fn sub_const(&self, other: &DMatrix<f64>) -> Self;
+
+  fn mul_const(&self, other: &DMatrix<f64>) -> Self;
+
+  fn div_const(&self, other: &DMatrix<f64>) -> Self;
+
+  fn matmul_const(&self, other: &DMatrix<f64>) -> Self;
+
+  fn deltas<F>(&self, gradients: &Gradients<'scope, DMatrix<f64>, F>) -> Deltas<'scope, DMatrix<f64>>
+  where
+    F: PullbackFamily<DMatrix<f64>, Operand = MatrixOp>;
 }
 
 impl<'scope> VarExt<'scope> for core::Var<'scope, DMatrix<f64>, MatrixOp> {
@@ -402,6 +547,34 @@ impl<'scope> VarExt<'scope> for core::Var<'scope, DMatrix<f64>, MatrixOp> {
   fn div_f64(&self, other: f64) -> Self {
     self.binary_op(self, DivF64Op(other))
   }
+
+  fn add_const(&self, other: &DMatrix<f64>) -> Self {
+    self.binary_op(self, AddConstOp(other.clone()))
+  }
+
+  fn sub_const(&self, other: &DMatrix<f64>) -> Self {
+    self.binary_op(self, SubConstOp(other.clone()))
+  }
+
+  fn mul_const(&self, other: &DMatrix<f64>) -> Self {
+    self.binary_op(self, MulConstOp(other.clone()))
+  }
+
+  fn div_const(&self, other: &DMatrix<f64>) -> Self {
+    self.binary_op(self, DivConstOp(other.clone()))
+  }
+
+  fn matmul_const(&self, other: &DMatrix<f64>) -> Self {
+    self.binary_op(self, MatMulConstOp(other.clone()))
+  }
+
+  fn deltas<F>(&self, gradients: &Gradients<'scope, DMatrix<f64>, F>) -> Deltas<'scope, DMatrix<f64>>
+  where
+    F: PullbackFamily<DMatrix<f64>, Operand = MatrixOp>,
+  {
+    let (rows, cols) = self.value().shape();
+    gradients.of(self, DMatrix::from_element(rows, cols, 1.0))
+  }
 }
 
 #[cfg(test)]
@@ -453,14 +626,10 @@ mod tests {
       let a = guard.var(dmatrix![1.0, 2.0; 3.0, 4.0]);
       let b = guard.var(dmatrix![5.0, 6.0; 7.0, 8.0]);
       let c = a.matmul(&b);
-
-      // [1,2] * [5,6]  =  [1*5+2*7, 1*6+2*8]  =  [19, 22]
-      // [3,4]   [7,8]     [3*5+4*7, 3*6+4*8]     [43, 50]
       assert_eq!(*c.value(), dmatrix![19.0, 22.0; 43.0, 50.0]);
 
       let grads = guard.lock().collapse();
       let dc = grads.of(&c, DMatrix::from_element(2, 2, 1.0));
-
       let expected_da = DMatrix::from_element(2, 2, 1.0) * dmatrix![5.0, 7.0; 6.0, 8.0];
       assert_eq!(dc[&a], expected_da);
 
@@ -476,12 +645,10 @@ mod tests {
       let a = guard.var(dmatrix![1.0, 2.0; 3.0, 4.0]);
       let b = guard.var(dmatrix![5.0, 6.0; 7.0, 8.0]);
       let c = a.hadamard(&b);
-
       assert_eq!(*c.value(), dmatrix![5.0, 12.0; 21.0, 32.0]);
 
       let grads = guard.lock().collapse();
       let dc = grads.of(&c, DMatrix::from_element(2, 2, 1.0));
-
       assert_eq!(dc[&a], dmatrix![5.0, 6.0; 7.0, 8.0]);
       assert_eq!(dc[&b], dmatrix![1.0, 2.0; 3.0, 4.0]);
     });
@@ -494,12 +661,10 @@ mod tests {
       let a = guard.var(dmatrix![6.0, 8.0; 10.0, 12.0]);
       let b = guard.var(dmatrix![2.0, 4.0; 5.0, 6.0]);
       let c = a.div(&b);
-
       assert_eq!(*c.value(), dmatrix![3.0, 2.0; 2.0, 2.0]);
 
       let grads = guard.lock().collapse();
       let dc = grads.of(&c, DMatrix::from_element(2, 2, 1.0));
-
       assert_eq!(dc[&a], dmatrix![0.5, 0.25; 0.2, 1.0/6.0]);
 
       let expected_db = dmatrix![
@@ -524,15 +689,59 @@ mod tests {
       let expected_matmul = dmatrix![4.0, 4.0; 10.0, 8.0];
       let expected_hadamard = dmatrix![2.0, 0.0; 3.0, 8.0];
       let expected = expected_matmul + expected_hadamard;
-
       assert_eq!(*c.value(), expected);
 
       let grads = guard.lock().collapse();
       let dc = grads.of(&c, DMatrix::from_element(2, 2, 1.0));
-
       // verify they exists and are finite... todo make better...
       assert!(dc[&a].iter().all(|x| x.is_finite()));
       assert!(dc[&b].iter().all(|x| x.is_finite()));
+    });
+  }
+
+  #[test]
+  fn test_matmul_const() {
+    let mut tape: Tape<DMatrix<f64>, Pullback> = Tape::new();
+    tape.scope(|guard| {
+      let w = guard.var(dmatrix![1.0, 2.0; 3.0, 4.0]);
+      let x = dmatrix![5.0; 6.0];
+      let y = w.matmul_const(&x);
+      assert_eq!(*y.value(), dmatrix![17.0; 39.0]);
+
+      let grads = guard.lock().collapse();
+      let dy = grads.of(&y, dmatrix![1.0; 1.0]);
+      assert_eq!(dy[&w], dmatrix![5.0, 6.0; 5.0, 6.0]);
+    });
+  }
+
+  #[test]
+  fn test_add_const() {
+    let mut tape: Tape<DMatrix<f64>, Pullback> = Tape::new();
+    tape.scope(|guard| {
+      let a = guard.var(dmatrix![1.0, 2.0; 3.0, 4.0]);
+      let b_const = dmatrix![10.0, 20.0; 30.0, 40.0];
+      let c = a.add_const(&b_const);
+      assert_eq!(*c.value(), dmatrix![11.0, 22.0; 33.0, 44.0]);
+
+      let grads = guard.lock().collapse();
+      let dc = grads.of(&c, DMatrix::from_element(2, 2, 1.0));
+      // gradient is identity...
+      assert_eq!(dc[&a], DMatrix::from_element(2, 2, 1.0));
+    });
+  }
+
+  #[test]
+  fn test_mul_const() {
+    let mut tape: Tape<DMatrix<f64>, Pullback> = Tape::new();
+    tape.scope(|guard| {
+      let a = guard.var(dmatrix![2.0, 3.0; 4.0, 5.0]);
+      let b_const = dmatrix![1.0, 2.0; 3.0, 4.0];
+      let c = a.mul_const(&b_const);
+      assert_eq!(*c.value(), dmatrix![2.0, 6.0; 12.0, 20.0]);
+
+      let grads = guard.lock().collapse();
+      let dc = grads.of(&c, DMatrix::from_element(2, 2, 1.0));
+      assert_eq!(dc[&a], b_const);
     });
   }
 }

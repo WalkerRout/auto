@@ -28,8 +28,8 @@ fn main() {
     let y = x.mul(&x);
     // After locking a guard, we can only spawn more subcomputations, or collapse into gradients
     let snap = guard.lock();
-    let gradients = snap.collapse();
-    let wrt_y = y.grads(&gradients);
+    let grads = snap.collapse();
+    let wrt_y = y.deltas(&grads);
     println!("Value: {}, dy/dx: {}", y.value(), wrt_y[&x]);
   });
 }

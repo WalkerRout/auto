@@ -16,22 +16,21 @@
 Here’s a quick example:
 
 ```rust
-use auto::Tape;
+use lib_auto::scalar::{Pullback, VarExt};
+use lib_auto::Tape;
 
 fn main() {
-  // Create a new tape (Wengert list) to store the nodes of our computation
-  let mut tape = Tape::new();
-  
+  // Create a new tape (Wengert List) to store the nodes of our computation
+  let mut tape: Tape<f64, Pullback> = Tape::new();
   // Define a scope to play around in
   tape.scope(|guard| {
-    // Create a variable on the guard with value 2.0
-    let x = guard.var(2.0);
-    // Create another variable (implicitly on the guard) with dependence on `x`
-    let y = x.sin() + x.cos();
+    let x = guard.var(1.0);
+    let y = x.mul(&x);
     // After locking a guard, we can only spawn more subcomputations, or collapse into gradients
-    let grads = guard.lock().collapse().of(&y);
-    // Now we get the gradient of `y` wrt `x`
-    println!("Value: {}, dy/dx: {}", *y, grads[&x]);
+    let snap = guard.lock();
+    let gradients = snap.collapse();
+    let wrt_y = y.grads(&gradients);
+    println!("Value: {}, dy/dx: {}", y.value(), wrt_y[&x]);
   });
 }
 ```

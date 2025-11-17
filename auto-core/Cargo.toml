@@ -1,0 +1,10 @@
+[package]
+name = "lib-auto-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ndarray = "0.16.1"
+noether = "0.3.0"
+rustc-hash = "2.1.1"
+smallvec = "1.15.1"

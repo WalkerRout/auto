@@ -1,0 +1,109 @@
+name: test
+
+on:
+  push:
+
+env:
+  RUST_BACKTRACE: full
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test platform builds and run tests
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+          - windows-latest
+        rust:
+          - beta
+          - stable
+          - nightly
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: install rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          default: true
+          profile: minimal
+
+      - name: restore cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: test
+        env:
+          OS: ${{ matrix.os }}
+          RUST_VERSION: ${{ matrix.rust }}
+          RUSTFLAGS: -D warnings
+        run: cargo test
+
+  rustfmt:
+    name: check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+
+      - name: install rust
+        uses: actions-rs/toolchain@v1
+        with:
+          default: true
+          profile: minimal
+          toolchain: stable
+          components: rustfmt
+
+      - name: formatter test
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: run linter
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v5
+
+      - name: install rust
+        uses: actions-rs/toolchain@v1
+        with:
+          default: true
+          profile: minimal
+          toolchain: stable
+          components: clippy
+
+      - name: restore cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: clippy test
+        run: cargo clippy --all --tests -- -D clippy::all -D warnings
+
+  miri:
+    name: sanitize unsafe
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v5
+
+      - name: install rust
+        uses: actions-rs/toolchain@v1
+        with:
+          default: true
+          profile: minimal
+          toolchain: nightly
+          components: "miri"
+
+      - name: restore cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: miri test
+        env:
+          PROPTEST_CASES: "10"
+          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-permissive-provenance"
+        run: cargo miri test

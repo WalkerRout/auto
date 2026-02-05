@@ -448,10 +448,7 @@ where
 
     Var {
       value,
-      inner: VarInner {
-        index,
-        tape,
-      },
+      inner: VarInner { index, tape },
       phantom: PhantomData,
     }
   }

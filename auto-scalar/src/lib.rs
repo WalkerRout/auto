@@ -1127,15 +1127,16 @@ mod tests {
         let c = guard.var(1.0);
         let res = a.pow(&b).sub(&c.asinh().div_f64(2.0)).add_f64(1.0f64.sin());
         let expected = 5.0f64.powf(2.0) - 1.0f64.asinh() / 2.0 + 1.0f64.sin();
-        assert_float_eq!(*res.value(), expected);
+        // relax equality due to accumulated floating point errors...
+        assert_float_eq!(*res.value(), expected, 1e-9);
         let (_, grads) = guard.lock().collapse();
         let dres = res.deltas(&grads);
         let ga = dres[&a]; // df/da
         let gb = dres[&b]; // df/db
         let gc = dres[&c]; // df/dc
-        assert_float_eq!(ga, 2.0 * 5.0);
-        assert_float_eq!(gb, 25.0 * 5.0f64.ln());
-        assert_float_eq!(gc, -1.0 / (2.0 * 2.0f64.sqrt()));
+        assert_float_eq!(ga, 2.0 * 5.0, 1e-9);
+        assert_float_eq!(gb, 25.0 * 5.0f64.ln(), 1e-9);
+        assert_float_eq!(gc, -1.0 / (2.0 * 2.0f64.sqrt()), 1e-9);
       });
     }
   }

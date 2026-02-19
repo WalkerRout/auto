@@ -635,12 +635,15 @@ where
 
       // write phase, emit updated deltas...
       for (node_idx, grad) in grads {
-        deltas
-          .entry(node_idx)
-          .and_modify(|g| {
-            *g += grad.clone();
-          })
-          .or_insert(grad);
+        use std::collections::hash_map::Entry;
+        match deltas.entry(node_idx) {
+          Entry::Occupied(mut e) => {
+            *e.get_mut() += grad;
+          }
+          Entry::Vacant(e) => {
+            e.insert(grad);
+          }
+        }
       }
     }
 

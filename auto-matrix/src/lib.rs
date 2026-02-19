@@ -121,7 +121,7 @@ impl PullbackFamily<DMatrix<f64>> for Pullback {
         let b_sq = b.component_mul(b);
         -a.component_div(&b_sq).component_mul(upstream)
       }
-      MatrixOp::Neg => DMatrix::zeros(0, 0),
+      MatrixOp::Neg => -upstream,
       MatrixOp::Exp => DMatrix::zeros(0, 0),
       MatrixOp::Ln => DMatrix::zeros(0, 0),
       MatrixOp::Reciprocal => DMatrix::zeros(0, 0),
@@ -146,13 +146,13 @@ impl Operation<DMatrix<f64>, Pullback> for AddOp {
 
   fn pullback_spec(
     &self,
-    a: &DMatrix<f64>,
-    b: &DMatrix<f64>,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
   ) -> PullbackSpec<DMatrix<f64>, Pullback> {
     PullbackSpec {
-      op_id_a: OpId::User(MatrixOp::Add),
-      op_id_b: OpId::User(MatrixOp::Add),
-      captures: smallvec![a.clone(), b.clone()],
+      op_id_a: OpId::Identity,
+      op_id_b: OpId::Identity,
+      captures: smallvec![],
     }
   }
 }
@@ -166,13 +166,13 @@ impl Operation<DMatrix<f64>, Pullback> for SubOp {
 
   fn pullback_spec(
     &self,
-    a: &DMatrix<f64>,
-    b: &DMatrix<f64>,
+    _a: &DMatrix<f64>,
+    _b: &DMatrix<f64>,
   ) -> PullbackSpec<DMatrix<f64>, Pullback> {
     PullbackSpec {
-      op_id_a: OpId::User(MatrixOp::Sub),
-      op_id_b: OpId::User(MatrixOp::Sub),
-      captures: smallvec![a.clone(), b.clone()],
+      op_id_a: OpId::Identity,
+      op_id_b: OpId::User(MatrixOp::Neg),
+      captures: smallvec![],
     }
   }
 }
@@ -362,9 +362,9 @@ impl Operation<DMatrix<f64>, Pullback> for AddConstOp {
     _b: &DMatrix<f64>,
   ) -> PullbackSpec<DMatrix<f64>, Pullback> {
     PullbackSpec {
-      op_id_a: OpId::User(MatrixOp::AddConst),
+      op_id_a: OpId::Identity,
       op_id_b: OpId::Ignore,
-      captures: smallvec![self.0.clone()],
+      captures: smallvec![],
     }
   }
 }
@@ -382,9 +382,9 @@ impl Operation<DMatrix<f64>, Pullback> for SubConstOp {
     _b: &DMatrix<f64>,
   ) -> PullbackSpec<DMatrix<f64>, Pullback> {
     PullbackSpec {
-      op_id_a: OpId::User(MatrixOp::SubConst),
+      op_id_a: OpId::Identity,
       op_id_b: OpId::Ignore,
-      captures: smallvec![self.0.clone()],
+      captures: smallvec![],
     }
   }
 }

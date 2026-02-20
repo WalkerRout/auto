@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["auto", "auto-core", "auto-matrix", "auto-scalar"]
+members = [
+  "crates/auto",
+  "crates/core",
+  "crates/matrix",
+  "crates/scalar",
+]
 
 [profile.release]
 lto = true
@@ -9,14 +14,12 @@ strip = "symbols"
 opt-level = 3
 codegen-units = 1
 
-# Profiling profile: optimized but with debug symbols for flamegraph/samply
-# Use with: RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling
+# RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling
 [profile.profiling]
 inherits = "release"
 debug = true
 strip = "none"
 
-# Benchmark profile: same as release but without stripping for accurate profiling
 [profile.bench]
 debug = true
 strip = "none"

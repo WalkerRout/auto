@@ -1,0 +1,46 @@
+[package]
+name = "auto"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "lib_auto"
+path = "src/lib.rs"
+
+[features]
+scalar = ["lib-auto-scalar"]
+matrix = ["lib-auto-matrix"]
+# `cargo add auto` only provides scalars, for small builds...
+default = ["scalar"]
+
+[dependencies]
+lib-auto-core = { path = "../core" }
+
+# feature gated, optional layers
+lib-auto-scalar = { path = "../scalar", optional = true }
+lib-auto-matrix = { path = "../matrix", optional = true }
+
+[dev-dependencies]
+nalgebra = "0.34.1"
+criterion = { version = "0.5", features = ["html_reports"] }
+dhat = "0.3"
+
+[[bench]]
+name = "criterion_benchmarks"
+harness = false
+path = "../../benches/criterion_benchmarks.rs"
+required-features = ["scalar", "matrix"]
+
+[[example]]
+name = "simple"
+path = "../../examples/simple.rs"
+
+[[example]]
+name = "xor_matrix"
+path = "../../examples/xor_matrix.rs"
+required-features = ["matrix"]
+
+[[example]]
+name = "xor_scalar"
+path = "../../examples/xor_scalar.rs"
+required-features = ["scalar"]

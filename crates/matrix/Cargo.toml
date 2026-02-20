@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 nalgebra = "0.34.1"
 smallvec = "1.15.1"
-lib-auto-core = { path = "../auto-core" }
+lib-auto-core = { path = "../core" }
